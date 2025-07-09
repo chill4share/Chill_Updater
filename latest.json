@@ -1,15 +1,14 @@
 {
-  "version": "1.0.2",
+  "version": "1.0.3",
   "notes": [
-    "- Fix some bug",
-    "- Maybe add some error"
+    "- add some bug"
   ],
-  "pub_date": "2025-07-09T07:00:31.013501+00:00",
+  "pub_date": "2025-07-09T07:31:28.041478+00:00",
   "platforms": {
     "windows-x64": {
-      "url": "https://github.com/chill4share/Chill_Updater/releases/download/v1.0.2/MediaTools.exe",
+      "url": "https://github.com/chill4share/Chill_Updater/releases/download/v1.0.3/MediaTools.exe",
       "updater_url": "https://github.com/chill4share/Chill_Updater/releases/download/updater_beta/updater.exe",
-      "sha256": "aeb2cae3d36b1fa07a5b97284ee1fb87524fb816cfc9219f4b9693e943e59568"
+      "sha256": "7900c3dd299ad3c9744820d078017184d7dffb328542df8f61337b077049092f"
     }
   }
 }
