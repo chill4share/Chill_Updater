@@ -1,0 +1,12 @@
+{
+  "version": "1.0.0",
+  "notes": "",
+  "pub_date": "2025-07-09T05:45:29.803475+00:00",
+  "platforms": {
+    "windows-x64": {
+      "url": "https://github.com/chill4share/Chill_Updater/releases/download/v1.0.0/MediaTools.exe",
+      "updater_url": "https://github.com/chill4share/Chill_Updater/releases/download/updater_beta/updater.exe",
+      "sha256": "dfb2e86ae0cfb54293e2f8dda00db63ae4d561bb43da32f029298eb3285fec01"
+    }
+  }
+}
