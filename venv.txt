@@ -1,0 +1,10 @@
+python -m venv venv
+venv\Scripts\activate
+pip install pyinstaller
+pip install -r requirements.txt
+rmdir /s /q build dist __pycache_
+
+%LOCALAPPDATA%
+pyinstaller --clean MediaTools.spec
+
+pyinstaller --windowed --name="MediaTools" main.py
