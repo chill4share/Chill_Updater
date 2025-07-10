@@ -133,15 +133,38 @@ class GUIView:
 
         other_options_frame = ttk.Frame(options_frame)
         other_options_frame.pack(fill="x")
-        ttk.Label(other_options_frame, text="Thời gian ghi (giây):").pack(side="left")
+        ttk.Label(other_options_frame, text="Thời gian (s):").pack(side="left")
         duration_entry = ttk.Entry(other_options_frame, width=10)
-        duration_entry.pack(side="left", padx=(5, 15))
-        ToolTip(duration_entry, "Để trống nếu không giới hạn thời gian ghi")
+        duration_entry.pack(side="left", padx=(5, 10))
 
+        # --- KHU VỰC THAY ĐỔI ĐỂ THÊM COMBOBOX ---
         convert_var = tk.BooleanVar(value=True)
-        convert_check = ttk.Checkbutton(other_options_frame, text="Tự động chuyển MP3", variable=convert_var)
+        
+        # Tạo Combobox cấu hình MP3
+        mp3_profiles = [
+            "Giữ nguyên gốc (128kbps)",
+            "Nâng cao 1 (Gốc, 44.1kHz, 0.92x, +0.2p)",
+            "Nâng cao 2 (Gốc, 48kHz, 0.93x, +0.3p)"
+        ]
+        mp3_profile_combobox = ttk.Combobox(other_options_frame, values=mp3_profiles, width=35, state="readonly")
+        mp3_profile_combobox.set(mp3_profiles[0]) # Mặc định
+        ToolTip(mp3_profile_combobox, "Chọn cấu hình chuyển đổi MP3.\nBitrate 'Gốc' sẽ để FFmpeg tự quyết định (VBR).")
+
+        # Hàm bật/tắt combobox
+        def toggle_mp3_options():
+            if convert_var.get():
+                mp3_profile_combobox.pack(side="left", padx=(5, 0))
+            else:
+                mp3_profile_combobox.pack_forget()
+
+        # Checkbutton giờ sẽ gọi hàm toggle
+        convert_check = ttk.Checkbutton(other_options_frame, text="->Mp3", variable=convert_var, command=toggle_mp3_options)
         convert_check.pack(side="left")
-        ToolTip(convert_check, "Chuyển file video sang MP3 sau khi ghi hình")
+        ToolTip(convert_check, "Tick để tự động chuyển video sang MP3 sau khi ghi hình")
+
+        # Gọi hàm một lần để đặt trạng thái ban đầu
+        toggle_mp3_options()
+        # --- KẾT THÚC KHU VỰC THAY ĐỔI ---
 
         url_combobox.bind("<FocusOut>", lambda e, rid=row_id: self.controller.handle_url_entry_focus_out(rid, e.widget))
         url_combobox.bind("<<ComboboxSelected>>", lambda e, rid=row_id: self.controller.handle_url_entry_focus_out(rid, e.widget))
@@ -150,7 +173,8 @@ class GUIView:
             'card_frame': card_frame, 'url_combobox': url_combobox, 'start_button': start_button, 
             'stop_button': stop_button, 'remove_button': remove_button, 'convert_var': convert_var, 
             'duration_entry': duration_entry, 'status_label': status_label, 'progressbar': progressbar,
-            'filename_entry': filename_entry
+            'filename_entry': filename_entry,
+            'mp3_profile_combobox': mp3_profile_combobox
         }
 
     # --- CÁC HÀM MỚI ---

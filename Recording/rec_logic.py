@@ -74,15 +74,33 @@ class VideoManagement:
                 stop_ffmpeg_processes(ffmpeg_pids)
 
     @staticmethod
-    def convert_mp4_to_mp3(file, output_file=None, ffmpeg_lock=None, ffmpeg_pids=None, recording_id='N/A'):
+    def convert_mp4_to_mp3(file, output_file=None, ffmpeg_lock=None, ffmpeg_pids=None, recording_id='N/A', mp3_profile=None):
         file = os.path.normpath(file)
-        logger.info(f"Bắt đầu chuyển đổi MP4 sang MP3: {os.path.basename(file)}")
+        logger.info(f"Bắt đầu chuyển đổi MP4 sang MP3: {os.path.basename(file)} với profile: {mp3_profile}")
         try:
             if output_file is None:
                 output_file = os.path.normpath(file.replace('.mp4', '.mp3'))
 
+            # Xây dựng tham số FFmpeg dựa trên profile
+            ffmpeg_params = ["-vn", "-acodec", "mp3"]
+            if mp3_profile and "Nâng cao 1" in mp3_profile:
+                # Bitrate gốc, 44.1kHz, tốc độ 0.92, cao độ 0.2
+                # FFmpeg không có tham số bitrate gốc, bỏ trống -ab sẽ dùng VBR mặc định
+                audio_filter = "atempo=0.92,asetrate=44100*1.2,aresample=44100" # Pitch +0.2 tương đương nhân tần số với ~1.2
+                ffmpeg_params.extend(["-ar", "44100", "-af", audio_filter])
+                logger.info("Sử dụng profile MP3 nâng cao 1")
+            elif mp3_profile and "Nâng cao 2" in mp3_profile:
+                # Bitrate gốc, 48kHz, tốc độ 0.93, cao độ 0.3
+                audio_filter = "atempo=0.93,asetrate=48000*1.3,aresample=48000" # Pitch +0.3 tương đương nhân tần số với ~1.3
+                ffmpeg_params.extend(["-ar", "48000", "-af", audio_filter])
+                logger.info("Sử dụng profile MP3 nâng cao 2")
+            else: # Mặc định hoặc "Giữ nguyên gốc"
+                ffmpeg_params.extend(["-ab", "128k"])
+                logger.info("Sử dụng profile MP3 mặc định (128kbps)")
+
+
             with ffmpeg_lock if ffmpeg_lock else nullcontext():
-                pid = run_ffmpeg(file, output_file, ["-vn", "-acodec", "mp3", "-ab", "128k"], recording_id=recording_id)
+                pid = run_ffmpeg(file, output_file, ffmpeg_params, recording_id=recording_id)
                 if ffmpeg_pids is not None:
                     with threading.Lock():
                         ffmpeg_pids.append(pid)
@@ -193,10 +211,10 @@ class TikTokAPI:
             raise LiveNotFound(TikTokError.RETRIEVE_LIVE_URL)
 
 class TikTokRecorder:
-    # --- SỬA ĐỔI: Thêm detail_log_callback vào hàm __init__ ---
+    
     def __init__(self, user, cookies=None, duration=None, convert_to_mp3=False, recording_id='N/A', 
                  custom_output_dir=None, status_callback=None, success_callback=None, 
-                 project_root=None, custom_filename=None, detail_log_callback=None): # <--- THAM SỐ MỚI
+                 project_root=None, custom_filename=None, detail_log_callback=None, mp3_profile=None):
         from Utils.config import COOKIES
         self.user = user
         self.cookies = cookies or COOKIES
@@ -208,7 +226,8 @@ class TikTokRecorder:
         self.success_callback = success_callback
         self.project_root = project_root
         self.custom_filename = custom_filename
-        # --- THÊM MỚI: Lưu lại callback chi tiết ---
+
+        self.mp3_profile = mp3_profile
         self.detail_log_callback = detail_log_callback
         
         self.tiktok = TikTokAPI(self.cookies)
@@ -231,7 +250,8 @@ class TikTokRecorder:
             self.detail_log_callback(self.recording_id, f"[{time.strftime('%H:%M:%S')}] {message}")
 
     def run(self):
-        wait_intervals = [120, 300, 600, 900]
+        # THAY ĐỔI 1: Giảm thời gian chờ tối đa xuống 10 phút (600s)
+        wait_intervals = [120, 300, 600]
         interval_index = 0
 
         while not self.stop_event.is_set():
@@ -270,10 +290,13 @@ class TikTokRecorder:
                     self._detail_log(f"Lỗi nghiêm trọng, dừng theo dõi: {e}")
                     return
 
-                wait_time = wait_intervals[min(interval_index, len(wait_intervals) - 1)]
+                # THAY ĐỔI 2: Sửa đổi logic để lặp lại chu kỳ chờ
+                # Lấy thời gian chờ dựa trên index hiện tại
+                wait_time = wait_intervals[interval_index]
                 logger.info(f"User {self.user} không live, chờ {wait_time} giây. (Lý do: {e})")
                 self._detail_log(f"User không live, sẽ kiểm tra lại sau {wait_time / 60:.1f} phút.")
-                interval_index += 1
+                # Cập nhật index cho lần lặp tiếp theo, sử dụng toán tử modulo (%) để quay vòng
+                interval_index = (interval_index + 1) % len(wait_intervals)
 
                 # --- VÒNG LẶP ĐẾM NGƯỢC ---
                 for i in range(wait_time, 0, -1):
@@ -375,7 +398,7 @@ class TikTokRecorder:
 
                 if self.convert_to_mp3 and os.path.exists(mp4_file):
                     self._detail_log("Bắt đầu chuyển đổi MP4 sang MP3...")
-                    VideoManagement.convert_mp4_to_mp3(mp4_file, recording_id=self.recording_id)
+                    VideoManagement.convert_mp4_to_mp3(mp4_file, recording_id=self.recording_id, mp3_profile=self.mp3_profile)
                     self._detail_log("Chuyển đổi MP3 thành công.")
             else:
                 os.remove(file_path)

@@ -232,6 +232,7 @@ class AppController:
                 custom_filename = model.widgets['filename_entry'].get().strip()
                 duration_str = model.widgets['duration_entry'].get()
                 duration = int(duration_str) if duration_str.isdigit() else None
+                mp3_profile = model.widgets['mp3_profile_combobox'].get()
 
                 recorder = TikTokRecorder(
                     user=username, cookies=self.cookies, duration=duration,
@@ -241,7 +242,8 @@ class AppController:
                     success_callback=self.report_recording_success,
                     project_root=self.project_root,
                     custom_filename=custom_filename,
-                    detail_log_callback=self.detail_log_update
+                    detail_log_callback=self.detail_log_update,
+                    mp3_profile=mp3_profile
                 )
 
                 with self.rows_lock: model.recorder = recorder
@@ -321,11 +323,23 @@ class AppController:
         self.is_running = False
 
         # Dừng tất cả recorder nếu còn đang chạy
-        for model in self.user_rows.values():
+        for row_id, model in self.user_rows.items():
             if model.recorder:
                 model.recorder.cancel()
+            
+            # THÊM MỚI: Hủy các widget để giải phóng biến Tkinter đúng cách
+            card_frame = model.widgets.get('card_frame')
+            if card_frame and card_frame.winfo_exists():
+                card_frame.destroy()
+            
+            detail_card_info = self.view.detail_cards.pop(row_id, None)
+            if detail_card_info and detail_card_info['frame'].winfo_exists():
+                detail_card_info['frame'].destroy()
 
-        logger.info("Đã gửi tín hiệu dừng cho tất cả các luồng.")
+        # Xóa toàn bộ các hàng đã lưu
+        self.user_rows.clear()
+        
+        logger.info("Đã gửi tín hiệu dừng và dọn dẹp UI cho tất cả các luồng.")
         
     def convert_to_mp3_manual(self, input_file, output_dir):
         if not input_file or not os.path.exists(input_file):
