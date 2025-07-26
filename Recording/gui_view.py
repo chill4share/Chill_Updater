@@ -23,7 +23,7 @@ class GUIView:
         self.setup_ui()
 
     def setup_ui(self):
-        create_tab_title(self.root, "Ghi hình lại phiên livestream TikTok")
+        create_tab_title(self.root, "Ghi hình Livestream (TikTok & Douyin)")
 
         header_frame = ttk.LabelFrame(self.root, text="Cài đặt chung", padding=10)
         header_frame.pack(padx=10, pady=(10, 5), fill="x")
@@ -90,8 +90,9 @@ class GUIView:
         url_combobox.grid(row=0, column=0, sticky="ew", padx=(0, 5))
         ToolTip(
             url_combobox,
-            "Nhập username mới hoặc chọn từ lịch sử\n"
-            "Nếu user offline → bấm 'Bắt đầu' để theo dõi và ghi hình tự động"
+            "Nhập username TikTok (@user) hoặc link live Douyin (live.douyin.com/...)\n"
+            "TikTok: Nếu user offline → bấm 'Bắt đầu' để theo dõi.\n"
+            "Douyin: Chỉ ghi hình nếu user đang live."
         )
 
         start_button = ttk.Button(main_controls_frame, text="▶ Bắt đầu", command=lambda: self.controller.start_recording(row_id))
@@ -180,33 +181,25 @@ class GUIView:
     # --- CÁC HÀM MỚI ---
     def create_detail_card(self, row_id):
         self.remove_detail_card(row_id)
-
         card_frame = self.card_frames.get(row_id)
         if not card_frame or not card_frame.winfo_exists(): return
         grid_info = card_frame.grid_info()
         row_index = grid_info.get('row', 0)
-
+        
+        # --- THAY ĐỔI: Lấy tên hiển thị từ controller ---
         model = self.controller.user_rows.get(row_id)
-        username = self.controller.extract_username(model.widgets['url_combobox'].get())
+        identifier = self.controller._extract_identifier(model.last_known_input, model.platform)
+        display_name = f"Douyin - {identifier}" if model.platform == 'douyin' else f"@{identifier}"
 
-        detail_frame = ttk.LabelFrame(self.card_container, text=f"Chi tiết: @{username}")
+        detail_frame = ttk.LabelFrame(self.card_container, text=f"Chi tiết: {display_name}")
         detail_frame.grid(row=row_index, column=1, sticky="ns", padx=(5,0), pady=(0, 5))
 
-        # 1. Ô log chính
         text_widget = scrolledtext.ScrolledText(detail_frame, height=7, width=50, font=('Consolas', 9), wrap=tk.WORD, relief="flat")
         text_widget.pack(fill="both", expand=True, padx=2, pady=2)
         text_widget.config(state="disabled")
-
-        # 2. Dòng trạng thái download riêng biệt
-        # Sử dụng Label để hiển thị, font nhỏ và màu khác để phân biệt
         download_label = ttk.Label(detail_frame, text="...", font=('Consolas', 9, 'italic'), foreground="blue")
         download_label.pack(fill="x", padx=5, pady=(0, 2))
-
-        self.detail_cards[row_id] = {
-            'frame': detail_frame, 
-            'text_widget': text_widget,
-            'download_label': download_label  # Lưu lại label để cập nhật
-        }
+        self.detail_cards[row_id] = {'frame': detail_frame, 'text_widget': text_widget, 'download_label': download_label}
 
     def update_detail_card(self, row_id, message):
         card_info = self.detail_cards.get(row_id)

@@ -12,9 +12,10 @@ import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
-from Utils.config import MAX_ROWS, MAX_ACTIVE_USERS, COOKIES
+from Utils.config import MAX_ROWS, MAX_ACTIVE_USERS, COOKIES, DOUYIN_COOKIE
 from .rec_logic import (
-    TikTokRecorder, TikTokException, UserLiveException,
+    TikTokRecorder,DouyinRecorder,
+    TikTokException, UserLiveException,
     LiveNotFound, RecordingException
 )
 from .gui_view import GUIView
@@ -30,6 +31,7 @@ class UserRowModel:
         self.is_stopping = False
         self.widgets = {}
         self.last_known_input = ""
+        self.platform = "tiktok" # Thêm thuộc tính platform
 
 class AppController:
     def __init__(self, root_frame, project_root, thread_pool):
@@ -46,7 +48,11 @@ class AppController:
         self.rows_lock = threading.RLock()
         self.thread_pool = thread_pool
         self.custom_output_dir = None
-        self.cookies = COOKIES
+        
+        # --- THAY ĐỔI: Tải cả 2 loại cookie ---
+        self.tiktok_cookies = COOKIES
+        self.douyin_cookies = DOUYIN_COOKIE
+        
         self.successful_users = []
         self.failed_users = []
         self.active_users = set()
@@ -61,9 +67,27 @@ class AppController:
         self.monitor_thread.start()
         logger.debug("Hoàn tất khởi tạo AppController")
 
-    # --- HÀM MỚI ---
+    # --- HÀM MỚI: Nhận diện nền tảng ---
+    def _detect_platform(self, input_str):
+        if "live.douyin.com/" in input_str:
+            return "douyin"
+        return "tiktok"
+
+    # --- HÀM MỚI: Trích xuất định danh (username hoặc web_rid) ---
+    def _extract_identifier(self, text_input, platform):
+        if not text_input or not isinstance(text_input, str): return ""
+        text_input = text_input.strip()
+        
+        if platform == "douyin":
+            match = re.search(r'live\.douyin\.com/(\d+)', text_input)
+            return match.group(1) if match else ""
+        else: # tiktok
+            match = re.search(r"@([a-zA-Z0-9_.-]+)", text_input)
+            if match: return match.group(1)
+            if re.match(r'^[a-zA-Z0-9_.-]+$', text_input): return text_input
+            return ""
+
     def detail_log_update(self, row_id, message):
-        """Đưa tác vụ cập nhật log chi tiết vào hàng đợi của UI."""
         self.update_queue.put(lambda: self.view.update_detail_card(row_id, message))
 
     def _load_user_history(self):
@@ -95,31 +119,28 @@ class AppController:
         if not model: return
         
         current_text = widget.get().strip()
-        username = self.extract_username(current_text)
+        platform = self._detect_platform(current_text)
+        identifier = self._extract_identifier(current_text, platform)
+        
+        model.platform = platform # Lưu lại nền tảng
         
         card_frame = model.widgets.get('card_frame')
         if card_frame and card_frame.winfo_exists():
-            card_frame.config(text=f"User: @{username}" if username else "User")
+            display_name = f"Douyin - {identifier}" if platform == 'douyin' else f"@{identifier}"
+            card_frame.config(text=f"User: {display_name}" if identifier else "User")
 
-        if username and current_text != f"@{username}":
-            widget.set(f"@{username}")
+        if platform == 'tiktok' and identifier and current_text != f"@{identifier}":
+            widget.set(f"@{identifier}")
         
         model.last_known_input = widget.get()
 
     def update_row_status(self, row_id, text, color, is_countdown=False):
         model = self.user_rows.get(row_id)
         if not model: return
-
-        # Chỉ cập nhật trạng thái logic nếu không phải là đếm ngược
-        if not is_countdown:
-            model.status = text
-
+        if not is_countdown: model.status = text
         status_label = model.widgets.get('status_label')
         progressbar = model.widgets.get('progressbar')
-
         self.update_queue.put(lambda: self.view.update_status_label(status_label, text, color))
-
-        # Không thay đổi progressbar khi đang đếm ngược
         if not is_countdown:
             if "Đang ghi hình" in text or "Đang khởi động" in text:
                 self.update_queue.put(lambda: self.view.update_progressbar(progressbar, mode='indeterminate'))
@@ -158,12 +179,10 @@ class AppController:
     def remove_user_row(self, row_id):
         model = self.user_rows.get(row_id)
         if not model: return
-
         if model.recorder is not None:
             msg = "User đang ghi hình/chờ.\nThao tác này sẽ HỦY và KHÔNG LƯU file.\nBạn có chắc không?"
             response = self.view.show_messagebox("askyesno", "Xác nhận Hủy", msg)
-            if response:
-                self.stop_recording(row_id, is_cancelling=True)
+            if response: self.stop_recording(row_id, is_cancelling=True)
         else:
             self.view.remove_detail_card(row_id)
             self.view.remove_user_card_from_gui(row_id)
@@ -172,9 +191,9 @@ class AppController:
             logger.info(f"Đã xóa thẻ với row_id: {row_id}")
             self._update_add_button_state()
 
-    def cleanup_ui_and_data(self, row_id, username):
+    def cleanup_ui_and_data(self, row_id, identifier):
         logger.debug(f"Bắt đầu dọn dẹp cho hàng {row_id}")
-        self.active_users.discard(username)
+        self.active_users.discard(identifier)
         with self.rows_lock:
             model = self.user_rows.get(row_id)
             if model:
@@ -183,14 +202,13 @@ class AppController:
                 model.is_stopping = False
                 self.view.update_ui_for_state(row_id, 'stopped')
                 self.update_row_status(row_id, "Chờ", "grey")
-                # Xóa thẻ chi tiết khi dọn dẹp
                 self.view.remove_detail_card(row_id) 
         self.view.update_status_labels(len(self.successful_users), len(self.failed_users))
-        logger.info(f"Hoàn tất dọn dẹp cho user {username}")
+        logger.info(f"Hoàn tất dọn dẹp cho user {identifier}")
 
-    def report_recording_success(self, row_id, username):
-        logger.info(f"Nhận báo cáo ghi hình thành công cho user: {username}")
-        if username not in self.successful_users: self.successful_users.append(username)
+    def report_recording_success(self, row_id, identifier):
+        logger.info(f"Nhận báo cáo ghi hình thành công cho user: {identifier}")
+        if identifier not in self.successful_users: self.successful_users.append(identifier)
         self.update_queue.put(lambda: self.view.update_status_labels(len(self.successful_users), len(self.failed_users)))
     
     def browse_output_dir(self):
@@ -209,23 +227,31 @@ class AppController:
             return
 
         url_input = model.widgets['url_combobox'].get()
-        username = self.extract_username(url_input)
+        platform = self._detect_platform(url_input)
+        identifier = self._extract_identifier(url_input, platform)
 
-        if not username:
-            self.view.show_messagebox("error", "Lỗi", "Tên người dùng không hợp lệ.")
+        if not identifier:
+            self.view.show_messagebox("error", "Lỗi", "Đầu vào không hợp lệ (username TikTok hoặc link Douyin).")
             return
 
         self.handle_url_entry_focus_out(row_id, model.widgets['url_combobox'])
 
         for r_id, r_model in self.user_rows.items():
-            if r_id != row_id and r_model.recorder and r_model.recorder.user == username:
-                self.view.show_messagebox("warning", "Trùng lặp", f"User {username} đã đang được ghi hình ở thẻ khác.")
-                return
+            if r_id != row_id and r_model.recorder:
+                recorder_id = r_model.recorder.web_rid if hasattr(r_model.recorder, 'web_rid') else r_model.recorder.user
+                if recorder_id == identifier and r_model.platform == platform:
+                    self.view.show_messagebox("warning", "Trùng lặp", f"Định danh '{identifier}' đã đang được xử lý.")
+                    return
 
-        if username in self.user_history: self.user_history.remove(username)
-        self.user_history.insert(0, username)
+        # --- THAY ĐỔI: Cập nhật lịch sử cho cả TikTok và Douyin ---
+        # Đối tượng để lưu vào lịch sử sẽ là username cho TikTok và full link cho Douyin
+        history_item = identifier if platform == 'tiktok' else url_input
+        if history_item in self.user_history:
+            self.user_history.remove(history_item)
+        self.user_history.insert(0, history_item)
         self._save_user_history()
         self._update_all_history_suggestions()
+        # --- KẾT THÚC THAY ĐỔI ---
 
         def record_in_thread():
             try:
@@ -233,38 +259,52 @@ class AppController:
                 duration_str = model.widgets['duration_entry'].get()
                 duration = int(duration_str) if duration_str.isdigit() else None
                 mp3_profile = model.widgets['mp3_profile_combobox'].get()
+                
+                recorder_class = DouyinRecorder if platform == 'douyin' else TikTokRecorder
+                recorder_args = {
+                    'cookies': self.douyin_cookies if platform == 'douyin' else self.tiktok_cookies,
+                    'duration': duration,
+                    'convert_to_mp3': model.widgets['convert_var'].get(),
+                    'recording_id': row_id,
+                    'custom_output_dir': self.custom_output_dir,
+                    'status_callback': self.update_row_status,
+                    'success_callback': self.report_recording_success,
+                    'project_root': self.project_root,
+                    'custom_filename': custom_filename,
+                    'detail_log_callback': self.detail_log_update,
+                    'mp3_profile': mp3_profile
+                }
+                # Thêm tham số đúng cho từng recorder
+                if platform == 'douyin':
+                    recorder_args['live_url'] = url_input
+                else:
+                    recorder_args['user'] = identifier
 
-                recorder = TikTokRecorder(
-                    user=username, cookies=self.cookies, duration=duration,
-                    convert_to_mp3=model.widgets['convert_var'].get(),
-                    recording_id=row_id, custom_output_dir=self.custom_output_dir,
-                    status_callback=self.update_row_status,
-                    success_callback=self.report_recording_success,
-                    project_root=self.project_root,
-                    custom_filename=custom_filename,
-                    detail_log_callback=self.detail_log_update,
-                    mp3_profile=mp3_profile
-                )
+                recorder = recorder_class(**recorder_args)
 
                 with self.rows_lock: model.recorder = recorder
-                self.active_users.add(recorder.user)
+                self.active_users.add(identifier)
                 recorder.run()
 
                 if recorder.cancellation_requested:
-                    if username not in self.failed_users: self.failed_users.append(username)
+                    if identifier not in self.failed_users: self.failed_users.append(identifier)
                     self.update_row_status(row_id, "Đã hủy", "red")
                 elif recorder.manual_stop_requested:
                     self.update_row_status(row_id, "Đã dừng & Lưu", "grey")
                 else:
-                    self.update_row_status(row_id, "Live kết thúc, theo dõi lại...", "orange")
+                    # Chỉ TikTok mới có chế độ theo dõi lại
+                    if platform == 'tiktok':
+                        self.update_row_status(row_id, "Live kết thúc, theo dõi lại...", "orange")
+                    else: # Douyin sẽ kết thúc
+                        self.update_row_status(row_id, "Hoàn tất", "grey")
 
             except (TikTokException, UserLiveException, LiveNotFound, RecordingException) as e:
-                logger.error(f"Lỗi ghi hình cho {username}: {e}")
-                if username not in self.failed_users: self.failed_users.append(username)
+                logger.error(f"Lỗi ghi hình cho {identifier}: {e}")
+                if identifier not in self.failed_users: self.failed_users.append(identifier)
                 self.update_row_status(row_id, f"Lỗi: {e}", "red")
             except Exception as e:
-                logger.critical(f"Lỗi không mong muốn khi ghi hình {username}: {e}", exc_info=True)
-                if username not in self.failed_users: self.failed_users.append(username)
+                logger.critical(f"Lỗi không mong muốn khi ghi hình {identifier}: {e}", exc_info=True)
+                if identifier not in self.failed_users: self.failed_users.append(identifier)
                 self.update_row_status(row_id, "Lỗi nghiêm trọng", "red")
 
         future = self.thread_pool.submit(record_in_thread)
@@ -278,26 +318,16 @@ class AppController:
         with self.rows_lock:
             model = self.user_rows.get(row_id)
             if not model or not model.recorder: return
-
         self.view.remove_detail_card(row_id)
-
+        identifier = model.recorder.web_rid if hasattr(model.recorder, 'web_rid') else model.recorder.user
         if is_cancelling:
-            logger.info(f"Đã gửi tín hiệu Hủy cho recorder của user {model.recorder.user}.")
+            logger.info(f"Đã gửi tín hiệu Hủy cho recorder của {identifier}.")
             self.update_row_status(row_id, "Đang hủy...", "orange")
             model.recorder.cancel()
         else:
-            logger.info(f"Đã gửi tín hiệu Dừng cho recorder của user {model.recorder.user}.")
+            logger.info(f"Đã gửi tín hiệu Dừng cho recorder của {identifier}.")
             self.update_row_status(row_id, "Đang dừng...", "orange")
             model.recorder.stop()
-
-    def extract_username(self, text_input):
-        if not text_input or not isinstance(text_input, str): return ""
-        text_input = text_input.strip()
-        match = re.search(r"@([a-zA-Z0-9_.-]+)", text_input)
-        if match: return match.group(1)
-        if re.match(r'^[a-zA-Z0-9_.-]+$', text_input): return text_input
-        logger.warning(f"Không thể trích xuất username từ đầu vào: '{text_input}'")
-        return ""
 
     def monitor_threads(self):
         while self.is_running:
@@ -310,35 +340,27 @@ class AppController:
                     if future and future.done():
                         recorder = model.recorder
                         if not recorder: continue
-                        username = recorder.user
+                        identifier = recorder.web_rid if hasattr(recorder, 'web_rid') else recorder.user
                         if future.exception():
-                            logger.error(f"Luồng cho user '{username}' đã kết thúc với một exception: {future.exception()}", exc_info=future.exception())
+                            logger.error(f"Luồng cho '{identifier}' đã kết thúc với một exception: {future.exception()}", exc_info=future.exception())
                         else:
-                            logger.info(f"Luồng cho user '{username}' đã hoàn thành, chuẩn bị dọn dẹp.")
+                            logger.info(f"Luồng cho '{identifier}' đã hoàn thành, chuẩn bị dọn dẹp.")
                         model.is_stopping = True
-                        self.update_queue.put(lambda rid=row_id, u=username: self.cleanup_ui_and_data(rid, u))
+                        self.update_queue.put(lambda rid=row_id, u=identifier: self.cleanup_ui_and_data(rid, u))
 
     def on_closing(self):
         logger.info("Bắt đầu quy trình đóng tab Recording")
         self.is_running = False
-
-        # Dừng tất cả recorder nếu còn đang chạy
         for row_id, model in self.user_rows.items():
             if model.recorder:
                 model.recorder.cancel()
-            
-            # THÊM MỚI: Hủy các widget để giải phóng biến Tkinter đúng cách
             card_frame = model.widgets.get('card_frame')
             if card_frame and card_frame.winfo_exists():
                 card_frame.destroy()
-            
             detail_card_info = self.view.detail_cards.pop(row_id, None)
             if detail_card_info and detail_card_info['frame'].winfo_exists():
                 detail_card_info['frame'].destroy()
-
-        # Xóa toàn bộ các hàng đã lưu
         self.user_rows.clear()
-        
         logger.info("Đã gửi tín hiệu dừng và dọn dẹp UI cho tất cả các luồng.")
         
     def convert_to_mp3_manual(self, input_file, output_dir):

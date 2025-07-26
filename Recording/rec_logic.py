@@ -16,7 +16,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from Recording.tiktoklive_fallback import get_room_id_with_tiktoklive
 
 # --- THAY ĐỔI IMPORT ---
-from Utils.config import TIKTOK_CONFIG
+from Utils.config import TIKTOK_CONFIG, DOUYIN_CONFIG
 from Utils.ffmpeg_utils import run_ffmpeg, stop_ffmpeg_processes
 from Utils.logger_setup import LoggerProvider
 logger = LoggerProvider.get_logger('recording')
@@ -111,17 +111,26 @@ class VideoManagement:
                 stop_ffmpeg_processes(ffmpeg_pids)
 
 class HttpClient:
-    def __init__(self, cookies=None):
+    def __init__(self, cookies=None, custom_headers=None):
         self.session = Session()
         self.session.trust_env = False
-        self.session.verify = True
-        self.session.headers.update({
+        
+        # Thiết lập headers mặc định
+        default_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
             "Referer": "https://www.tiktok.com/",
-        })
+        }
+
+        # Nếu có custom_headers, cập nhật vào bộ mặc định
+        if custom_headers:
+            default_headers.update(custom_headers)
+        
+        self.session.headers.update(default_headers)
+        
         if cookies:
-            self.session.cookies.update(cookies)
+            # Dùng headers['Cookie'] thay vì session.cookies.update để đảm bảo tính nhất quán
+            self.session.headers['Cookie'] = cookies
 
     def close_session(self):
         if self.session:
@@ -416,13 +425,236 @@ class TikTokRecorder:
         self.stop_event.set()
 
     def get_user_dir(self):
+        base_path = os.path.dirname(sys.executable) if hasattr(sys, '_MEIPASS') else self.project_root
+        output_dir_base = self.custom_output_dir or os.path.join(base_path, 'Rec_Output')
+        
+        # --- THAY ĐỔI: Sử dụng tên tác giả cho thư mục ---
+        # self.user ban đầu là Douyin_{rid}, sau khi có thông tin live sẽ được cập nhật thành tên thật
+        safe_user_name = re.sub(r'[\\/*?:"<>|]', "", self.user)
+        user_dir = os.path.normpath(os.path.join(output_dir_base, safe_user_name))
+        # --- KẾT THÚC THAY ĐỔI ---
+
+        os.makedirs(user_dir, exist_ok=True)
+        return user_dir
+
+#=================================================================
+# LỚP MỚI: DOUYIN API
+#=================================================================
+class DouyinAPI:
+    def __init__(self, cookies):
+        self.config = DOUYIN_CONFIG
+        # Douyin cần headers và referer cụ thể
+        douyin_headers = {
+            "Referer": "https://live.douyin.com/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        }
+        self.http_client = HttpClient(cookies=cookies, custom_headers=douyin_headers)
+
+    def get_live_info(self, web_rid: str):
+        """Lấy thông tin chi tiết của livestream từ web_rid."""
+        params = self.config['api_params'].copy()
+        params['web_rid'] = web_rid
+        
+        try:
+            response = self.http_client.session.get(self.config['api_endpoints']['web_enter'], params=params, timeout=15)
+            
+            # Xử lý các trường hợp bị chặn
+            if "<title>验证</title>" in response.text:
+                raise RecordingException("Yêu cầu bị chặn bởi CAPTCHA.")
+            
+            response.raise_for_status()
+            data = response.json()
+
+            # Chuẩn hóa dữ liệu trả về
+            normalized_data = {}
+            room_data = data.get("data", {}).get("data", [{}])[0]
+            user_data = data.get("data", {}).get("user", {})
+            
+            normalized_data["author_name"] = user_data.get("nickname", "Không rõ")
+            normalized_data["live_title"] = room_data.get("title", "Không có tiêu đề")
+            normalized_data["status"] = room_data.get("status", 4)
+            
+            if normalized_data["status"] == 2: # Đang live
+                stream_data = room_data.get("stream_url", {})
+                flv_map = stream_data.get("flv_pull_url", {})
+                # Ưu tiên chất lượng gốc
+                live_url = flv_map.get("ORIGIN") or flv_map.get("FULL_HD1") or next(iter(flv_map.values()), None)
+                normalized_data["live_url"] = live_url
+            
+            return normalized_data
+
+        except RequestException as e:
+            logger.error(f"Lỗi mạng khi lấy thông tin Douyin cho RID {web_rid}: {e}")
+            raise RecordingException(f"Lỗi mạng: {e}")
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.error(f"Lỗi phân tích dữ liệu Douyin cho RID {web_rid}: {e}")
+            raise RecordingException("Lỗi phân tích dữ liệu API.")
+
+#=================================================================
+# LỚP MỚI: DOUYIN RECORDER
+#=================================================================
+class DouyinRecorder:
+    def __init__(self, live_url, cookies=None, duration=None, convert_to_mp3=False, recording_id='N/A', 
+                 custom_output_dir=None, status_callback=None, success_callback=None, 
+                 project_root=None, custom_filename=None, detail_log_callback=None, mp3_profile=None):
+        
+        self.live_url = live_url
+        self.web_rid = self.live_url.split('?')[0].rstrip('/').rsplit('/', 1)[-1]
+        self.cookies = cookies
+        self.duration = duration
+        self.convert_to_mp3 = convert_to_mp3
+        self.recording_id = recording_id
+        self.custom_output_dir = custom_output_dir
+        self.status_callback = status_callback
+        self.success_callback = success_callback
+        self.project_root = project_root
+        self.custom_filename = custom_filename
+        self.mp3_profile = mp3_profile
+        self.detail_log_callback = detail_log_callback
+        
+        self.douyin_api = DouyinAPI(self.cookies)
+        self.stop_event = threading.Event()
+        self.cancellation_requested = False
+        self.manual_stop_requested = False
+        self.output_filepath = None
+        self.final_video_path = None
+        self.user = f"Douyin_{self.web_rid}" # Tên định danh nội bộ
+
+        logger.info(f"Khởi tạo Douyin recorder cho RID: {self.web_rid}")
+
+    def _update_status(self, message, color, is_countdown=False):
+        if self.status_callback:
+            self.status_callback(self.recording_id, message, color, is_countdown)
+
+    def _detail_log(self, message):
+        if self.detail_log_callback:
+            self.detail_log_callback(self.recording_id, f"[{time.strftime('%H:%M:%S')}] {message}")
+
+    def run(self):
+        """Vòng lặp chính cho Douyin, đơn giản hơn TikTok vì không cần theo dõi."""
+        try:
+            self._detail_log("Kiểm tra trạng thái livestream Douyin...")
+            self._update_status("Kiểm tra live...", "blue")
+            
+            live_info = self.douyin_api.get_live_info(self.web_rid)
+            
+            if live_info.get("status") == 2:
+                self.user = live_info.get("author_name", self.user) # Cập nhật tên thật
+                self._detail_log(f"Xác nhận user '{self.user}' đang live. Bắt đầu ghi hình.")
+                logger.info(f"User Douyin {self.user} (RID: {self.web_rid}) đang livestream.")
+                self._update_status("Đang ghi hình...", "green")
+                self.start_recording(live_info)
+            else:
+                self._detail_log("User hiện không livestream.")
+                self._update_status("Offline", "grey")
+                logger.info(f"User Douyin (RID: {self.web_rid}) không live.")
+
+        except RecordingException as e:
+            logger.error(f"Lỗi khi ghi hình Douyin (RID: {self.web_rid}): {e}")
+            self._update_status(f"Lỗi: {e}", "red")
+            self._detail_log(f"Lỗi nghiêm trọng, dừng lại: {e}")
+        except Exception as e:
+            logger.critical(f"Lỗi không mong muốn với Douyin (RID: {self.web_rid}): {e}", exc_info=True)
+            self._update_status("Lỗi nghiêm trọng", "red")
+            self._detail_log(f"Lỗi không xác định: {e}")
+
+    def start_recording(self, live_info):
+        try:
+            live_url = live_info.get("live_url")
+            if not live_url:
+                raise RecordingException("Không tìm thấy URL stream hợp lệ.")
+            
+            self._detail_log("Lấy URL của luồng FLV thành công.")
+
+            if self.custom_filename:
+                safe_filename = re.sub(r'[\\/*?:"<>|]', "", self.custom_filename)
+                base_name = safe_filename
+            else:
+                base_name = f"DY_{self.user}_{time.strftime('%Y%m%d_%H%M%S')}"
+
+            self.output_filepath = os.path.join(self.get_user_dir(), f"{base_name}_flv.mp4")
+
+            logger.info(f"Bắt đầu ghi hình Douyin @{self.user}. Lưu vào: {os.path.basename(self.output_filepath)}")
+            self._detail_log(f"Bắt đầu tải stream...")
+            self.fetch_stream(live_url, self.output_filepath)
+        finally:
+            if self.cancellation_requested:
+                logger.warning(f"Hủy bỏ, xóa file tạm cho Douyin {self.user}.")
+                if self.output_filepath and os.path.exists(self.output_filepath):
+                    with suppress(OSError): os.remove(self.output_filepath)
+            else:
+                self.process_recorded_file(self.output_filepath)
+
+    def fetch_stream(self, live_url, output_file):
+        start_time = time.time()
+        total_bytes = 0
+        last_update_time = time.time()
+        try:
+            # Douyin cần headers khi tải stream
+            headers = self.douyin_api.http_client.session.headers
+            with self.douyin_api.http_client.session.get(live_url, stream=True, timeout=15, headers=headers) as response:
+                response.raise_for_status()
+                self._detail_log("Kết nối stream thành công.")
+                with open(output_file, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if self.stop_event.is_set():
+                            self._detail_log("Nhận tín hiệu dừng, ngừng tải.")
+                            break
+                        f.write(chunk)
+                        total_bytes += len(chunk)
+
+                        current_time = time.time()
+                        if current_time - last_update_time > 10:
+                            self._detail_log(f"[DOWNLOAD]Đã nhận: {total_bytes / (1024*1024):.2f} MB")
+                            last_update_time = current_time
+
+                        if self.duration and (current_time - start_time) > self.duration:
+                            self._detail_log(f"Đạt thời gian ghi hình tối đa.")
+                            break
+            self._detail_log(f"Tải stream hoàn tất, tổng dung lượng: {total_bytes / (1024*1024):.2f} MB.")
+        except RequestException as e:
+            self._detail_log(f"Lỗi kết nối: {e}")
+            raise RecordingException(f"Lỗi kết nối khi tải stream: {e}")
+
+    def process_recorded_file(self, file_path):
+        # Hàm này giống hệt TikTokRecorder
+        if file_path and os.path.exists(file_path):
+            if os.path.getsize(file_path) > 1024:
+                mp4_file = file_path.replace('_flv.mp4', '.mp4')
+                self._detail_log("Bắt đầu chuyển đổi FLV -> MP4...")
+                VideoManagement.convert_flv_to_mp4(file_path, recording_id=self.recording_id)
+                self.final_video_path = mp4_file
+                self._detail_log("Chuyển đổi MP4 thành công.")
+
+                if self.success_callback and os.path.exists(mp4_file):
+                    self.success_callback(self.recording_id, self.user)
+
+                if self.convert_to_mp3 and os.path.exists(mp4_file):
+                    self._detail_log("Bắt đầu chuyển đổi MP4 sang MP3...")
+                    VideoManagement.convert_mp4_to_mp3(mp4_file, recording_id=self.recording_id, mp3_profile=self.mp3_profile)
+                    self._detail_log("Chuyển đổi MP3 thành công.")
+            else:
+                os.remove(file_path)
+                self._detail_log("File ghi hình quá nhỏ, đã xóa.")
+                logger.warning(f"File ghi hình của Douyin @{self.user} rỗng hoặc quá nhỏ, đã xóa.")
+
+    def stop(self):
+        logger.info(f"Đã gửi tín hiệu Dừng & Lưu cho Douyin recorder của {self.user}")
+        self.manual_stop_requested = True
+        self.stop_event.set()
+
+    def cancel(self):
+        logger.warning(f"Đã gửi tín hiệu Hủy & Xóa cho Douyin recorder của {self.user}")
+        self.cancellation_requested = True
+        self.stop_event.set()
+
+    def get_user_dir(self):
+        # Hàm này giống hệt TikTokRecorder
         if not self.project_root:
             base_path = os.path.dirname(sys.executable) if hasattr(sys, '_MEIPASS') else os.path.dirname(os.path.abspath(__file__))
         else:
             base_path = self.project_root
-
         output_dir_base = self.custom_output_dir or os.path.join(base_path, 'Rec_Output')
-
         user_dir = os.path.normpath(os.path.join(output_dir_base, self.user))
         os.makedirs(user_dir, exist_ok=True)
         return user_dir
