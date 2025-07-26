@@ -81,7 +81,7 @@ class MainApplication:
         self.check_for_updates(silent=True)
 
     def setup_window(self):
-        self.root.title("Media Tools v1.0.6 Fly to the Moon")
+        self.root.title("Media Tools v1.0.7 Up to Dead")
         self.root.geometry("980x750")
         self.root.minsize(980, 750)
         self.root.resizable(False, False)
