@@ -6,26 +6,40 @@ import re
 import os
 
 from .down_logic import retry_api
-from Utils.config import COOKIES 
 from Utils.logger_setup import LoggerProvider
 logger = LoggerProvider.get_logger('download')
 
 class TikTokDownloader:
-    COOKIES = COOKIES
-
-    def __init__(self):
+    def __init__(self, cookies_str=None):
+        """
+        Khởi tạo downloader với chuỗi cookie được cung cấp.
+        """
         self.logger = logger
         self.session = requests.Session()
-        self.initialize_session()
+        # Gọi hàm khởi tạo session với cookie được truyền vào
+        self.initialize_session(cookies_str)
 
-    def initialize_session(self):
+    def initialize_session(self, cookies_str):
+        """
+        Thiết lập header và cookie cho session.
+        """
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9,vi-VN;q=0.8",
             "Referer": "https://www.tiktok.com/",
         })
-        self.session.cookies.update(self.COOKIES)
-        self.logger.info("Khởi tạo session với header của trình duyệt.")
+        
+        # Chuyển đổi chuỗi cookie thành dictionary và cập nhật vào session
+        if cookies_str:
+            try:
+                # Tách chuỗi cookie thành các cặp key=value
+                cookies_dict = {k.strip(): v for k, v in (item.split('=', 1) for item in cookies_str.split(';') if '=' in item)}
+                self.session.cookies.update(cookies_dict)
+                self.logger.info("Khởi tạo session cho tab Download với cookie được cung cấp.")
+            except Exception as e:
+                self.logger.error(f"Lỗi định dạng cookie cho tab Download: {e}. Session sẽ không có cookie.")
+        else:
+            self.logger.warning("Không có cookie nào được cung cấp cho tab Download.")
 
     def extract_username_and_video_id(self, url_or_id):
         """
@@ -52,13 +66,6 @@ class TikTokDownloader:
         if match: return match.group(1)
         if url_or_id.isdigit(): return url_or_id
         return url_or_id
-
-    def extract_username_from_url(self, url):
-        url = url.replace('\n', '').replace('%0A', '').strip()
-        match = re.search(r'@([^/?]+)', url)
-        if match: return match.group(1)
-        self.logger.error(f"Lỗi trích xuất username từ {url}")
-        return "unknown"
 
     async def download_video(self, url_or_id):
         video_id = self.extract_video_id(url_or_id)

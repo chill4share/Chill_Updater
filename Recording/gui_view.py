@@ -5,7 +5,7 @@ import sys
 import os
 
 from Utils.ui_utils import ToolTip, center_dialog, create_tab_title
-from Utils.config import README_CONTENT
+from Utils.config import README_CONTENT, MP3_PROFILES
 from Utils.logger_setup import LoggerProvider
 logger = LoggerProvider.get_logger('recording')
 
@@ -61,16 +61,26 @@ class GUIView:
 
         footer_frame = ttk.LabelFrame(self.root, text="Thống kê", padding=10)
         footer_frame.pack(padx=10, pady=(5, 10), fill="x")
-        footer_frame.columnconfigure(0, weight=1)
-        footer_frame.columnconfigure(1, weight=1)
+        
+        success_frame = ttk.Frame(footer_frame)
+        success_frame.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.success_label = ttk.Label(success_frame, text="Thành công: 0", foreground="green")
+        self.success_label.pack(side="left")
+        
+        # --- THAY ĐỔI: Chuyển nút Xem thành nút thường ---
+        ttk.Button(success_frame, text="Xem danh sách", command=lambda: self.controller.show_status_details("success")).pack(side="right")
+        
+        failure_frame = ttk.Frame(footer_frame)
+        failure_frame.pack(side="left", fill="x", expand=True, padx=(10, 0))
+        self.failure_label = ttk.Label(failure_frame, text="Thất bại: 0", foreground="red")
+        self.failure_label.pack(side="left")
 
-        self.success_label = ttk.Label(footer_frame, text="Thành công: 0", foreground="green")
-        self.success_label.grid(row=0, column=0, sticky="w")
-        ttk.Button(footer_frame, text="Xem", command=lambda: self.controller.show_status_details("success")).grid(row=0, column=0, sticky="e")
-
-        self.failure_label = ttk.Label(footer_frame, text="Thất bại: 0", foreground="red")
-        self.failure_label.grid(row=0, column=1, sticky="w", padx=(20, 0))
-        ttk.Button(footer_frame, text="Xem", command=lambda: self.controller.show_status_details("failure")).grid(row=0, column=1, sticky="e")
+        failure_menubutton = ttk.Menubutton(failure_frame, text="Xem", style="Outline.TMenubutton")
+        failure_menubutton.pack(side="right")
+        failure_menu = tk.Menu(failure_menubutton, tearoff=0)
+        failure_menu.add_command(label="Xem danh sách", command=lambda: self.controller.show_status_details("failure"))
+        failure_menu.add_command(label="Mở file log", command=self.controller.open_log_file)
+        failure_menubutton["menu"] = failure_menu
 
     def add_user_card_to_gui(self, row_id, user_history):
         row_index = len(self.card_frames)
@@ -86,85 +96,104 @@ class GUIView:
 
         url_combobox = ttk.Combobox(main_controls_frame, width=30, values=user_history)
         url_combobox.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        ToolTip(
-            url_combobox,
-            "Nhập username TikTok (@user) hoặc link live Douyin (live.douyin.com/...)\n"
-            "TikTok: Nếu user offline → bấm 'Bắt đầu' để theo dõi.\n"
-            "Douyin: Chỉ ghi hình nếu user đang live."
-        )
+        ToolTip(url_combobox, "Nhập username TikTok (@user) hoặc link live Douyin (live.douyin.com/...)")
+        
+        buttons_frame = ttk.Frame(main_controls_frame)
+        buttons_frame.grid(row=0, column=1, sticky="e")
+        
+        start_button = ttk.Button(buttons_frame, text="▶ Bắt đầu", command=lambda: self.controller.start_recording(row_id))
+        start_button.pack(side="left", padx=(5, 5))
+        
+        stop_button = ttk.Button(buttons_frame, text="■ Dừng", command=lambda: self.controller.stop_recording(row_id), state="disabled")
+        stop_button.pack(side="left", padx=(0, 5))
+        
+        remove_button = ttk.Button(buttons_frame, text="➖ Xóa", command=lambda: self.controller.remove_user_row(row_id))
+        remove_button.pack(side="left")
 
-        start_button = ttk.Button(main_controls_frame, text="▶ Bắt đầu", command=lambda: self.controller.start_recording(row_id))
-        start_button.grid(row=0, column=1, padx=(5, 5))
+        # --- THAY ĐỔI: Thêm nút mở thư mục vào đây ---
+        status_options_frame = ttk.Frame(card_frame)
+        status_options_frame.grid(row=1, column=0, sticky="ew", pady=(8,0))
+        status_options_frame.columnconfigure(2, weight=1) 
 
-        stop_button = ttk.Button(main_controls_frame, text="■ Dừng", command=lambda: self.controller.stop_recording(row_id), state="disabled")
-        stop_button.grid(row=0, column=2, padx=(0, 5))
+        options_button = ttk.Button(status_options_frame, text="⚙️", width=3, command=lambda: options_var.set(not options_var.get()))
+        options_button.grid(row=0, column=0, sticky="w")
+        ToolTip(options_button, "Hiển thị/Ẩn tùy chọn nâng cao")
+        
+        # Nút mở thư mục mới
+        folder_button = ttk.Button(status_options_frame, text="📁", width=3, command=lambda: self.controller.open_specific_user_folder(row_id))
+        folder_button.grid(row=0, column=1, sticky="w", padx=(5, 0))
+        ToolTip(folder_button, "Mở thư mục chứa các bản ghi của user này")
 
-        remove_button = ttk.Button(main_controls_frame, text="➖ Xóa", command=lambda: self.controller.remove_user_row(row_id))
-        remove_button.grid(row=0, column=3)
+        progressbar = ttk.Progressbar(status_options_frame, orient="horizontal", length=100, mode="determinate")
+        progressbar.grid(row=0, column=2, sticky="ew", padx=(5,0))
 
-        status_line_frame = ttk.Frame(card_frame)
-        status_line_frame.grid(row=1, column=0, sticky="ew", pady=(8,0))
-        status_line_frame.columnconfigure(0, weight=1)
-
-        progressbar = ttk.Progressbar(status_line_frame, orient="horizontal", length=100, mode="determinate")
-        progressbar.grid(row=0, column=0, sticky="ew")
-
-        status_label = ttk.Label(status_line_frame, text="Chờ", anchor="w", foreground="grey", width=28)
-        status_label.grid(row=0, column=1, sticky="w", padx=(5,0))
+        status_label = ttk.Label(status_options_frame, text="Chờ", anchor="w", foreground="grey", width=20)
+        status_label.grid(row=0, column=3, sticky="w", padx=(5,0))
 
         options_var = tk.BooleanVar()
         options_frame = ttk.Frame(card_frame, padding=(15, 8))
-
-        def toggle_options():
+        options_frame.columnconfigure(0, weight=1)
+        options_frame.columnconfigure(1, weight=1)
+        
+        def toggle_options(*args):
             if options_var.get():
-                options_frame.grid(row=3, column=0, sticky="w", pady=(5,0))
+                options_frame.grid(row=2, column=0, sticky="ew", pady=(5,0))
             else:
                 options_frame.grid_remove()
-
-        ttk.Checkbutton(card_frame, text="⚙️ Tùy chọn nâng cao", variable=options_var, command=toggle_options).grid(row=2, column=0, sticky="w", pady=(5,0))
-
-        filename_frame = ttk.Frame(options_frame)
-        filename_frame.pack(fill="x", pady=(0, 8))
-        ttk.Label(filename_frame, text="Tên file tùy chỉnh:").pack(side="left")
-        filename_entry = ttk.Entry(filename_frame, width=30)
-        filename_entry.pack(side="left", padx=5, fill="x", expand=True)
-        ToolTip(filename_entry, "Để trống sẽ dùng tên mặc định: TK_user_ngày_giờ")
-
-        other_options_frame = ttk.Frame(options_frame)
-        other_options_frame.pack(fill="x")
-        ttk.Label(other_options_frame, text="Thời gian (s):").pack(side="left")
-        duration_entry = ttk.Entry(other_options_frame, width=10)
-        duration_entry.pack(side="left", padx=(5, 10))
-
-        convert_var = tk.BooleanVar(value=True)
         
-        mp3_profiles = [
-            "Giữ nguyên gốc (128kbps)",
-            "Nâng cao 1 (Gốc, 44.1kHz, 0.92x, +0.2p)",
-            "Nâng cao 2 (Gốc, 48kHz, 0.93x, +0.3p)"
-        ]
-        mp3_profile_combobox = ttk.Combobox(other_options_frame, values=mp3_profiles, width=35, state="readonly")
-        mp3_profile_combobox.set(mp3_profiles[0])
-        ToolTip(mp3_profile_combobox, "Chọn cấu hình chuyển đổi MP3.\nBitrate 'Gốc' sẽ để FFmpeg tự quyết định (VBR).")
+        options_var.trace_add("write", toggle_options)
+        
+        left_options = ttk.Frame(options_frame)
+        left_options.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        left_options.columnconfigure(0, weight=1)
 
-        def toggle_mp3_options():
-            if convert_var.get():
-                mp3_profile_combobox.pack(side="left", padx=(5, 0))
-            else:
-                mp3_profile_combobox.pack_forget()
+        ttk.Label(left_options, text="Tên file tùy chỉnh:").pack(fill="x")
+        filename_entry = ttk.Entry(left_options)
+        filename_entry.pack(fill="x", pady=(2, 5))
+        ToolTip(filename_entry, "Để trống sẽ dùng tên mặc định: user_ngày_giờ")
+        
+        ttk.Label(left_options, text="Thời gian ghi (giây):").pack(fill="x")
+        duration_entry = ttk.Entry(left_options)
+        duration_entry.pack(fill="x", pady=(2, 0))
 
-        convert_check = ttk.Checkbutton(other_options_frame, text="->Mp3", variable=convert_var, command=toggle_mp3_options)
+        right_options = ttk.Frame(options_frame)
+        right_options.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        right_options.columnconfigure(0, weight=1)
+
+        mp3_options_frame = ttk.Frame(right_options)
+        mp3_options_frame.pack(fill="x", pady=(0,5))
+        
+        convert_var = tk.BooleanVar(value=True)
+        convert_check = ttk.Checkbutton(mp3_options_frame, text="->Mp3", variable=convert_var)
         convert_check.pack(side="left")
         ToolTip(convert_check, "Tick để tự động chuyển video sang MP3 sau khi ghi hình")
 
-        toggle_mp3_options()
+        mute_var = tk.BooleanVar(value=False)
+        mute_check = ttk.Checkbutton(mp3_options_frame, text="Tắt tiếng Video", variable=mute_var)
+        mute_check.pack(side="left", padx=(10, 0))
+        ToolTip(mute_check, "Lưu file video không có âm thanh (MP3 vẫn được tạo nếu chọn)")
+        
+        mp3_display_names = [profile['display'] for profile in MP3_PROFILES.values()]
+        mp3_profile_combobox = ttk.Combobox(right_options, values=mp3_display_names, state="readonly")
+        mp3_profile_combobox.pack(fill="x")
+        mp3_profile_combobox.set(mp3_display_names[0])
+        ToolTip(mp3_profile_combobox, "Chọn cấu hình chuyển đổi MP3.")
+        
+        def toggle_mp3_widgets(*args):
+            state = "normal" if convert_var.get() else "disabled"
+            if mp3_profile_combobox.winfo_exists():
+                mp3_profile_combobox.config(state=state)
+
+        convert_var.trace_add("write", toggle_mp3_widgets)
+        toggle_mp3_widgets()
 
         url_combobox.bind("<FocusOut>", lambda e, rid=row_id: self.controller.handle_url_entry_focus_out(rid, e.widget))
         url_combobox.bind("<<ComboboxSelected>>", lambda e, rid=row_id: self.controller.handle_url_entry_focus_out(rid, e.widget))
 
         return {
             'card_frame': card_frame, 'url_combobox': url_combobox, 'start_button': start_button, 
-            'stop_button': stop_button, 'remove_button': remove_button, 'convert_var': convert_var, 
+            'stop_button': stop_button, 'remove_button': remove_button, 
+            'convert_var': convert_var, 'mute_video_var': mute_var,
             'duration_entry': duration_entry, 'status_label': status_label, 'progressbar': progressbar,
             'filename_entry': filename_entry,
             'mp3_profile_combobox': mp3_profile_combobox

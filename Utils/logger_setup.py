@@ -1,5 +1,3 @@
-# Utils/logger_setup.py
-
 import logging
 from logging.handlers import RotatingFileHandler
 import sys
@@ -68,7 +66,7 @@ class LoggerManager:
         if cls._instance is None:
             cls._instance = super(LoggerManager, cls).__new__(cls)
             cls._instance.loggers = {}
-            # --- CẢI TIẾN: Thêm biến để lưu đường dẫn cơ sở ---
+            cls._instance.file_handlers = {}
             cls._instance.base_path = None
             cls._instance.is_production = hasattr(sys, '_MEIPASS')
         return cls._instance
@@ -77,31 +75,23 @@ class LoggerManager:
         if name in self.loggers:
             return self.loggers[name]
 
-        # --- CẢI TIẾN: Logic "thông minh" để lưu và sử dụng base_path ---
-        # 1. Nếu base_path của Manager chưa được set, và lần gọi này có cung cấp, hãy lưu lại.
         if self.base_path is None and base_path is not None:
             self.base_path = base_path
-            # Log lần đầu tiên để xác nhận
-            # (Phải tạo logger tạm thời để log, vì logger hiện tại chưa hoàn thành)
             temp_logger = logging.getLogger('setup')
             if not temp_logger.handlers:
                 temp_handler = logging.StreamHandler()
                 temp_logger.addHandler(temp_handler)
             temp_logger.info(f"[LoggerManager] Đường dẫn log cơ sở được thiết lập: {self.base_path}")
 
-        # 2. Sử dụng đường dẫn đã lưu nếu lần gọi này không cung cấp
         effective_base_path = self.base_path if base_path is None else base_path
 
-        # 3. Fallback cuối cùng nếu vẫn không có đường dẫn nào (trường hợp an toàn)
         if effective_base_path is None:
             if self.is_production:
                 effective_base_path = os.path.dirname(sys.executable)
             else:
-                # Trỏ về thư mục cha của thư mục chứa file này (ví dụ: Utils -> Project Root)
                 effective_base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-            self.base_path = effective_base_path # Lưu lại cho các lần sau
+            self.base_path = effective_base_path
 
-        # --- Từ đây, sử dụng `effective_base_path` để đảm bảo tính nhất quán ---
         logger = logging.getLogger(name)
         logger.setLevel(logging.DEBUG)
         logger.propagate = False
@@ -116,21 +106,18 @@ class LoggerManager:
             except Exception as e:
                 print(f"[ERROR] Không thể xóa file log cũ '{log_path}': {e}")
 
-        # File Handler
         try:
-            file_handler = RotatingFileHandler(
-                log_path, maxBytes=5*1024*1024, backupCount=3, encoding='utf-8'
-            )
+            file_handler = RotatingFileHandler(log_path, maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')
             file_handler.setLevel(logging.DEBUG)
             file_format = '%(asctime)s [%(levelname)s] %(message)s'
             file_datefmt = '%Y-%m-%d %H:%M:%S'
             file_formatter = logging.Formatter(file_format, file_datefmt)
             file_handler.setFormatter(file_formatter)
             logger.addHandler(file_handler)
+            self.file_handlers[name] = file_handler
         except Exception as e:
             print(f"[ERROR] Không thể tạo file log '{log_path}': {e}")
 
-        # Console Handler (Chỉ cho môi trường dev)
         if not self.is_production and not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
             console_handler = logging.StreamHandler()
             console_handler.setLevel(logging.DEBUG)
@@ -141,5 +128,13 @@ class LoggerManager:
 
         self.loggers[name] = logger
         return logger
+    
+    @classmethod
+    def get_log_filepath(cls, name):
+        """Trả về đường dẫn tuyệt đối của file log cho một logger cụ thể."""
+        manager = cls._instance
+        if manager and name in manager.file_handlers:
+            return os.path.abspath(manager.file_handlers[name].baseFilename)
+        return None
 
 LoggerProvider = LoggerManager()

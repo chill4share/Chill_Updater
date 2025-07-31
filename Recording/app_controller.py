@@ -10,7 +10,9 @@ import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
-from Utils.config import MAX_ROWS, MAX_ACTIVE_USERS, TIKTOK_RECORDER_COOKIE_STRING, DOUYIN_COOKIE
+from Utils.cookie_loader import load_user_cookies, save_user_cookies
+from .settings_window import SettingsWindow
+from Utils.config import MAX_ROWS, MAX_ACTIVE_USERS, MP3_PROFILES, FALLBACK_TIKTOK_COOKIE, FALLBACK_DOUYIN_COOKIE
 from .rec_logic import (
     TikTokRecorder, DouyinRecorder,
     RecordingException, VideoManagement
@@ -54,7 +56,13 @@ class AppController:
         self.thread_pool = thread_pool
         self.custom_output_dir = None
         
-        self.douyin_cookies = DOUYIN_COOKIE
+        # Tải cookie do người dùng cung cấp
+        self.user_cookies = load_user_cookies() 
+        # Giữ lại cookie hardcode làm phương án dự phòng
+        self.fallback_cookies = {
+            'tiktok': FALLBACK_TIKTOK_COOKIE,
+            'douyin': FALLBACK_DOUYIN_COOKIE
+        }
         
         self.successful_users = []
         self.failed_users = []
@@ -70,16 +78,97 @@ class AppController:
         self.monitor_thread.start()
         logger.debug("Hoàn tất khởi tạo AppController")
 
+    def open_specific_user_folder(self, row_id):
+        """Mở thư mục con của một user cụ thể trong thư mục Output."""
+        model = self.user_rows.get(row_id)
+        if not model: return
+
+        user_folder_path = None
+        # Nếu recorder đã được tạo, nó là nguồn tin cậy nhất cho đường dẫn
+        if model.recorder:
+            user_folder_path = model.recorder.get_user_dir()
+        else:
+            # Nếu chưa, tạo đường dẫn dự đoán từ thông tin nhập vào
+            identifier = self._extract_identifier(model.last_known_input, model.platform)
+            if not identifier:
+                self.view.show_messagebox("info", "Thông báo", "Vui lòng nhập ID user để xác định thư mục.")
+                return
+            
+            # Phải khớp với logic tạo tên trong rec_logic
+            # Douyin ban đầu sẽ có tên thư mục là "Douyin_{RID}"
+            user_for_folder = f"Douyin_{identifier}" if model.platform == 'douyin' else identifier
+            sanitized_foldername = re.sub(r'[\\/*?:"<>|]', "", user_for_folder)
+            
+            base_output_dir = self.custom_output_dir or os.path.join(self.project_root, 'Rec_Output')
+            user_folder_path = os.path.join(base_output_dir, sanitized_foldername)
+
+        if os.path.isdir(user_folder_path):
+            try:
+                os.startfile(user_folder_path)
+                logger.info(f"Đang mở thư mục của user: {user_folder_path}")
+            except Exception as e:
+                logger.error(f"Không thể mở thư mục user: {e}")
+                self.view.show_messagebox("error", "Lỗi", f"Không thể mở thư mục:\n{user_folder_path}")
+        else:
+            self.view.show_messagebox("info", "Thông báo", f"Thư mục của user chưa tồn tại.\n(Có thể chưa có bản ghi nào được lưu).\nĐường dẫn mong muốn: {user_folder_path}")
+
+    def open_log_file(self):
+        """Mở file log của tab Recording."""
+        try:
+            # Lấy đường dẫn file log từ LoggerProvider
+            log_filepath = LoggerProvider.get_log_filepath('recording')
+            if log_filepath and os.path.exists(log_filepath):
+                os.startfile(log_filepath)
+                logger.info(f"Đang mở file log: {log_filepath}")
+            else:
+                logger.warning("Không tìm thấy file log của tab Recording.")
+                self.view.show_messagebox("warning", "Không tìm thấy", "Không tìm thấy file log.")
+        except Exception as e:
+            logger.error(f"Không thể mở file log: {e}")
+            self.view.show_messagebox("error", "Lỗi", f"Không thể mở file log.")
+
+    def get_active_cookies(self, platform):
+        """
+        Ưu tiên cookie của người dùng. Nếu không có, dùng cookie dự phòng.
+        platform: 'tiktok' hoặc 'douyin'
+        """
+        user_cookie = self.user_cookies.get(platform, "").strip()
+        if user_cookie:
+            logger.info(f"Sử dụng cookie do người dùng cung cấp cho {platform}.")
+            return user_cookie
+        
+        logger.warning(f"Không có cookie người dùng, sử dụng cookie dự phòng cho {platform}.")
+        return self.fallback_cookies.get(platform)
+
+    def show_settings(self):
+        """Hiển thị cửa sổ cài đặt cookies."""
+        SettingsWindow(self.root, self.user_cookies, self.save_settings)
+
+    def save_settings(self, new_cookies):
+        """Callback để lưu cookies từ cửa sổ cài đặt."""
+        if save_user_cookies(new_cookies):
+            self.user_cookies = new_cookies # Cập nhật trạng thái cookies trong controller
+            return True
+        return False
+
     def get_current_mp3_options(self, row_id):
         model = self.user_rows.get(row_id)
         if not model or not model.widgets:
-            return {'convert': False, 'profile': ''}
+            return {'convert': False, 'profile_key': None}
 
         widgets = model.widgets
         convert = widgets.get('convert_var').get() if 'convert_var' in widgets else False
-        profile = widgets.get('mp3_profile_combobox').get() if 'mp3_profile_combobox' in widgets else ''
+        
+        selected_display_name = widgets.get('mp3_profile_combobox').get() if 'mp3_profile_combobox' in widgets else ''
+        
+        # Tìm key tương ứng với display name
+        profile_key = None
+        for key, profile in MP3_PROFILES.items():
+            if profile['display'] == selected_display_name:
+                profile_key = key
+                break
 
-        return {'convert': convert, 'profile': profile}
+        return {'convert': convert, 'profile_key': profile_key}
 
     def _detect_platform(self, input_str):
         if "live.douyin.com/" in input_str:
@@ -273,15 +362,20 @@ class AppController:
         self._update_all_history_suggestions()
         
         def record_in_thread():
-            final_status = None
             try:
+                # Lấy tất cả tùy chọn từ giao diện
                 custom_filename = model.widgets['filename_entry'].get().strip()
                 duration_str = model.widgets['duration_entry'].get()
                 duration = int(duration_str) if duration_str.isdigit() else None
+                mp3_options = self.get_current_mp3_options(row_id)
+                mute_video = model.widgets['mute_video_var'].get()
+                
+                # Lấy cookie đang hoạt động
+                active_cookie = self.get_active_cookies(platform)
                 
                 recorder_class = DouyinRecorder if platform == 'douyin' else TikTokRecorder
                 recorder_args = {
-                    'cookies': self.douyin_cookies if platform == 'douyin' else TIKTOK_RECORDER_COOKIE_STRING,
+                    'cookies': active_cookie,
                     'duration': duration,
                     'recording_id': row_id,
                     'custom_output_dir': self.custom_output_dir,
@@ -292,6 +386,8 @@ class AppController:
                     'project_root': self.project_root,
                     'custom_filename': custom_filename,
                     'detail_log_callback': self.detail_log_update,
+                    'mp3_options': mp3_options,
+                    'mute_video': mute_video,
                 }
                 if platform == 'douyin':
                     recorder_args['live_url'] = url_input
@@ -303,7 +399,7 @@ class AppController:
                     model.recorder = recorder
                 self.active_users.add(identifier)
                 
-                final_status = recorder.run()
+                recorder.run()
 
             except RecordingException as e:
                 logger.error(f"Lỗi ghi hình cho {identifier}: {e}")
@@ -317,25 +413,6 @@ class AppController:
                 self.update_row_status(row_id, "Lỗi nghiêm trọng", "red")
             
             finally:
-                if final_status and final_status.get('status') == 'success':
-                    filepath = final_status.get('filepath')
-                    if filepath:
-                        mp3_options = self.get_current_mp3_options(row_id)
-                        if mp3_options.get('convert'):
-                            logger.info(f"Bắt đầu chuyển MP3 cho {os.path.basename(filepath)}")
-                            self.update_queue.put(lambda: self.detail_log_update(row_id, "[MP3] Bắt đầu chuyển đổi..."))
-                            try:
-                                VideoManagement.convert_mp4_to_mp3(
-                                    file=filepath,
-                                    recording_id=row_id,
-                                    mp3_profile=mp3_options.get('profile')
-                                )
-                                self.update_queue.put(lambda: self.detail_log_update(row_id, "[MP3] Chuyển đổi thành công!"))
-                            except Exception as e:
-                                logger.error(f"Lỗi chuyển MP3 cho {os.path.basename(filepath)}: {e}")
-                                # SỬA LỖI Ở DÒNG DƯỚI ĐÂY
-                                self.update_queue.put(lambda err=e: self.detail_log_update(row_id, f"[MP3] Lỗi: {err}"))
-
                 identifier_to_clean = identifier
                 self.update_queue.put(lambda: self.cleanup_ui_and_data(row_id, identifier_to_clean))
 

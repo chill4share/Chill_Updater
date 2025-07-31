@@ -10,6 +10,8 @@ import threading
 # <--- THAY ĐỔI IMPORT --->
 from .down_api import TikTokDownloader
 from Utils.logger_setup import LoggerProvider
+from Utils.cookie_loader import load_user_cookies
+from Utils.config import FALLBACK_TIKTOK_COOKIE
 
 # Lấy logger dành riêng cho tab Download
 logger = LoggerProvider.get_logger('download') 
@@ -21,7 +23,13 @@ class TikTokDownloaderGUI:
         self.root = root_frame 
         self.project_root = project_root 
         
-        self.downloader = TikTokDownloader()
+        # Tải cookie của người dùng từ file json
+        user_cookies = load_user_cookies()
+        # Ưu tiên cookie người dùng, nếu không có thì dùng fallback
+        active_tiktok_cookie = user_cookies.get('tiktok', "").strip() or FALLBACK_TIKTOK_COOKIE
+        
+        self.downloader = TikTokDownloader(cookies_str=active_tiktok_cookie)
+        
         self.is_downloading = False
         self.reset_stats()
         
@@ -160,13 +168,15 @@ class TikTokDownloaderGUI:
             messagebox.showwarning("Đang tải", "Quá trình tải đang diễn ra. Vui lòng chờ.")
             return
             
+        user_cookies = load_user_cookies()
+        active_tiktok_cookie = user_cookies.get('tiktok', "").strip() or FALLBACK_TIKTOK_COOKIE
+        self.downloader = TikTokDownloader(cookies_str=active_tiktok_cookie)
+            
         urls_text = self.input_text.get("1.0", tk.END).strip()
         
         save_folder_input = self.folder_entry.get().strip()
         
-        # <--- THAY ĐỔI: Cập nhật logic thư mục mặc định --->
         if not save_folder_input or save_folder_input == self.folder_placeholder:
-            # Sử dụng project_root và tên thư mục mới
             self.save_folder = os.path.join(self.project_root, 'Download_Output')
             self.log_status(f"Thư mục không được chọn, sử dụng mặc định: {self.save_folder}")
         else:
