@@ -1,11 +1,12 @@
+# /Utils/config.py (Nội dung hoàn chỉnh)
+
 MAX_ROWS = 15
 MAX_ACTIVE_USERS = 5
 
-COOKIES = {}
 
-TIKTOK_RECORDER_COOKIE_STRING = ""
-
-DOUYIN_COOKIE = ""
+# --- Các chuỗi cookie của bạn không thay đổi ---
+FALLBACK_TIKTOK_COOKIE  = ""
+FALLBACK_DOUYIN_COOKIE  = ""
 
 DOUYIN_CONFIG = {
     'api_endpoints': {
@@ -35,3 +36,19 @@ TIKTOK_CONFIG = {
 README_CONTENT = """
 
 """
+
+# === Cấu hình mới cho việc chuyển đổi MP3 ===
+MP3_PROFILES = {
+    "default": {
+        "display": "Giữ nguyên gốc (128kbps)",
+        "params": ["-vn", "-acodec", "mp3", "-ab", "128k"]
+    },
+    "profile1": {
+        "display": "Nâng cao 1 (Gốc, 44.1kHz, 0.92x, +0.2p)",
+        "params": ["-vn", "-acodec", "mp3", "-ar", "44100", "-af", "atempo=0.92,asetrate=44100*1.2,aresample=44100"]
+    },
+    "profile2": {
+        "display": "Nâng cao 2 (Gốc, 48kHz, 0.93x, +0.3p)",
+        "params": ["-vn", "-acodec", "mp3", "-ar", "48000", "-af", "atempo=0.93,asetrate=48000*1.3,aresample=48000"]
+    }
+}
