@@ -16,6 +16,7 @@ from Utils.logger_setup import LoggerProvider
 from Utils.ffmpeg_utils import setup_ffmpeg
 from Utils.config import MAX_ACTIVE_USERS
 from Recording.app_controller import AppController
+from Recording.settings_window import SettingsWindow
 from Down_Chanel.down_gui import TikTokDownloaderGUI
 from Convert.convert_gui import ConvertGUI
 from CutMerge.cut_merge_gui import CutMergeGUI
@@ -96,6 +97,9 @@ class MainApplication:
         
         file_menu = tk.Menu(menu_bar, tearoff=0)
         menu_bar.add_cascade(label="File", menu=file_menu)
+        # THÊM MỚI
+        file_menu.add_command(label="Cài đặt Cookies", command=self.open_recording_settings)
+        file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.on_closing)
         
         help_menu = tk.Menu(menu_bar, tearoff=0)
@@ -103,6 +107,14 @@ class MainApplication:
         help_menu.add_command(label="About Recording", command=lambda: self.recording_controller.view.show_about())
         help_menu.add_separator()
         help_menu.add_command(label="Check for Updates", command=lambda: self.check_for_updates(silent=False))
+
+    def open_recording_settings(self):
+        """Mở cửa sổ cài đặt cho tab Recording."""
+        if hasattr(self, 'recording_controller'):
+            # Ủy quyền cho controller của tab Recording hiển thị cửa sổ
+            self.recording_controller.show_settings()
+        else:
+            messagebox.showwarning("Lỗi", "Không thể mở cài đặt. Tab Recording chưa được khởi tạo.", parent=self.root)
 
     def get_current_version(self):
         if not hasattr(sys, '_MEIPASS'):

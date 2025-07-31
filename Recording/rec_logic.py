@@ -9,6 +9,7 @@ from contextlib import suppress
 import threading
 import json
 import subprocess
+from enum import Enum
 from requests import RequestException, Session
 
 from TikTokLive.client.client import TikTokLiveClient
@@ -20,7 +21,17 @@ from Utils.constants import Status, Colors
 from Utils.config import DOUYIN_CONFIG, MP3_PROFILES
 
 logger = LoggerProvider.get_logger('recording')
+
 class RecordingException(Exception): pass
+class TikTokException(Exception): pass
+class UserLiveException(Exception): pass
+
+class TikTokError(Enum):
+    def __str__(self): return str(self.value)
+    ROOM_ID_ERROR = "Không lấy được RoomID từ API."
+    API_CHANGED = "Cấu trúc API TikTok đã thay đổi, vui lòng cập nhật ứng dụng."
+    USERNAME_NOT_FOUND = "Không tìm thấy người dùng."
+
 nest_asyncio.apply()
 
 class VideoManagement:
@@ -55,21 +66,61 @@ class VideoManagement:
     def create_muted_video(input_file, output_file, recording_id='N/A'):
         logger.info(f"Tạo video không tiếng: {os.path.basename(output_file)}", extra={'recording_id': recording_id})
         try:
-            # Cũ:
-            #run_ffmpeg(input_file, output_file, ["-c:v", "copy", "-an"], recording_id=recording_id)
-            # Mới:
             run_ffmpeg(input_file, output_file, ["-c:v", "copy", "-map", "0:v"], recording_id=recording_id)
             return output_file
         except Exception as e:
             logger.error(f"Lỗi khi tạo video không tiếng: {e}", extra={'recording_id': recording_id})
             return None
 
+class TikTokLegacyScraper:
+    def __init__(self, cookies):
+        self.session = Session()
+        self.session.trust_env = False
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
+            "Referer": "https://www.tiktok.com/",
+        })
+        if cookies:
+            self.session.headers['Cookie'] = cookies
+
+    def get_room_id_from_user_page(self, user: str) -> str:
+        try:
+            url = f"https://www.tiktok.com/@{user}/live"
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
+            content = response.text
+            match = re.search(r'<script id="SIGI_STATE" type="application/json">(.*?)</script>', content)
+            if not match:
+                raise UserLiveException(TikTokError.API_CHANGED)
+
+            sigi_state = json.loads(match.group(1)) or {}
+            
+            room_id = sigi_state.get('LiveRoom', {}).get('liveRoomUserInfo', {}).get('user', {}).get('roomId')
+            if not room_id:
+                room_id = sigi_state.get('RoomFeed', {}).get('detail', {}).get('liveRoom', {}).get('roomId')
+            if not room_id:
+                user_module = sigi_state.get('UserModule', {}).get('users', {})
+                if user_module and user in user_module:
+                    room_id = user_module[user].get('roomId')
+            
+            if not room_id:
+                 raise UserLiveException(TikTokError.ROOM_ID_ERROR)
+
+            logger.info(f"[LegacyScr] Lấy thông tin thành công: {room_id}")
+            return str(room_id)
+        
+        except RequestException as e:
+            if e.response and e.response.status_code == 404:
+                raise UserLiveException(TikTokError.USERNAME_NOT_FOUND)
+            raise TikTokException(f"Lỗi mạng: {e}")
+        except (json.JSONDecodeError, KeyError, UserLiveException) as e:
+            raise UserLiveException(e)
+
 class BaseRecorder:
     def __init__(self, **kwargs):
         self.user = kwargs.get('user', 'N/A')
         for key, value in kwargs.items(): setattr(self, key, value)
-
-        # Trích xuất các callback và tùy chọn
         self.failure_callback = kwargs.get('failure_callback')
         self.success_callback = kwargs.get('success_callback')
         self.close_card_callback = kwargs.get('close_card_callback')
@@ -77,8 +128,6 @@ class BaseRecorder:
         self.detail_log_callback = kwargs.get('detail_log_callback')
         self.mp3_options = kwargs.get('mp3_options', {'convert': False})
         self.mute_video = kwargs.get('mute_video', False)
-
-        # Trạng thái nội bộ
         self.stop_event = threading.Event()
         self.cancellation_requested = False
         self.manual_stop_requested = False
@@ -114,21 +163,14 @@ class BaseRecorder:
         raise NotImplementedError("Lớp con phải triển khai phương thức run()")
 
     def _process_output_file(self, original_video_path):
-        """
-        Xử lý file video sau khi ghi xong với logic chống xung đột cuối cùng.
-        """
         self._update_status("Đang xử lý file...", Colors.BLUE)
-
-        # Kiểm tra các tùy chọn
         do_mp3_conversion = self.mp3_options.get('convert')
         do_video_muting = self.mute_video
 
-        # Trường hợp 1: Không làm gì cả
         if not do_mp3_conversion and not do_video_muting:
             self._detail_log("Không có tác vụ xử lý file nào được chọn.")
             return original_video_path
 
-        # Trường hợp 2: Chỉ chuyển MP3
         if do_mp3_conversion and not do_video_muting:
             self._detail_log("[MP3] Bắt đầu chuyển đổi (chỉ MP3)...")
             try:
@@ -138,7 +180,6 @@ class BaseRecorder:
                 self._detail_log(f"[MP3] Lỗi: {e}")
             return original_video_path
 
-        # Trường hợp 3: Chỉ tắt tiếng video
         if not do_mp3_conversion and do_video_muting:
             self._detail_log("Bắt đầu tắt tiếng video (chỉ tắt tiếng)...")
             path_parts = os.path.splitext(original_video_path)
@@ -151,16 +192,13 @@ class BaseRecorder:
                     return original_video_path
                 except OSError as e:
                     self._detail_log(f"Lỗi thay thế file đã tắt tiếng: {e}")
-                    return result_path # Trả về file tạm nếu không thay thế được
+                    return result_path
             else:
                 self._detail_log("Lỗi tạo file không tiếng.")
                 return original_video_path
 
-        # --- TRƯỜNG HỢP 4: LÀM CẢ HAI (LOGIC AN TOÀN NHẤT) ---
         if do_mp3_conversion and do_video_muting:
             self._detail_log("Bắt đầu xử lý MP3 và Tắt tiếng...")
-            
-            # Bước 1: Tạo file MP3 từ file gốc
             self._detail_log("[MP3] Tạo file MP3 từ file gốc...")
             try:
                 VideoManagement.convert_mp4_to_mp3(file=original_video_path, recording_id=self.recording_id, profile_key=self.mp3_options.get('profile_key'))
@@ -168,23 +206,21 @@ class BaseRecorder:
             except Exception as e:
                 self._detail_log(f"[MP3] Lỗi: {e}")
             
-            # Bước 2: Tạo một file video MỚI (đã tắt tiếng) từ file gốc
             self._detail_log("Tạo file video mới không có âm thanh...")
             path_parts = os.path.splitext(original_video_path)
-            muted_final_path = f"{path_parts[0]}_muted.mp4" # Đặt tên rõ ràng
+            muted_final_path = f"{path_parts[0]}_muted.mp4"
             
             result_path = VideoManagement.create_muted_video(original_video_path, muted_final_path, self.recording_id)
             
-            # Bước 3: Xóa file video gốc (có âm thanh)
             if result_path and os.path.exists(result_path):
                 self._detail_log(f"Tạo video không tiếng thành công: {os.path.basename(result_path)}")
                 try:
                     os.remove(original_video_path)
                     self._detail_log("Đã xóa file video gốc (có âm thanh).")
-                    return result_path # Trả về đường dẫn của file mới đã tắt tiếng
+                    return result_path
                 except OSError as e:
                     self._detail_log(f"Lỗi xóa file video gốc: {e}")
-                    return result_path # Vẫn trả về file đã tắt tiếng dù không xóa được file gốc
+                    return result_path
             else:
                 self._detail_log("Lỗi tạo file không tiếng, giữ lại file gốc.")
                 return original_video_path
@@ -208,10 +244,7 @@ class BaseRecorder:
             if callable(self.failure_callback): self.failure_callback(self.recording_id, self.user)
             return {'status': 'failed', 'filepath': self.output_filepath}
 
-        # Xử lý file (MP3/Mute)
         final_video_path = self._process_output_file(self.output_filepath)
-
-        # Cập nhật trạng thái cuối cùng
         status_msg = Status.DONE_STOPPED if self.manual_stop_requested else Status.DONE_SUCCESS
         color = Colors.DARK_BLUE if self.manual_stop_requested else Colors.GREEN
         self._update_status(status_msg, color)
@@ -231,6 +264,7 @@ class TikTokRecorder(BaseRecorder):
         self.INITIAL_WAIT_TIME = 180
         self.MAX_WAIT_TIME = 1800
         self.current_wait_time = self.INITIAL_WAIT_TIME
+        self.scraper = TikTokLegacyScraper(self.cookies)
         logger.info(f"Khởi tạo TikTok recorder cho user: {self.user}")
 
     def _log_subprocess_output(self, pipe):
@@ -249,7 +283,7 @@ class TikTokRecorder(BaseRecorder):
             logger.warning(f"Lỗi khi đang đọc log từ subprocess: {e}")
 
     def run(self):
-        self._detail_log("Bắt đầu vòng lặp theo dõi.")
+        self._detail_log("Bắt đầu theo dõi kênh...")
         loop = asyncio.get_event_loop()
         final_status = None
         
@@ -258,22 +292,47 @@ class TikTokRecorder(BaseRecorder):
                 try:
                     self._update_status(Status.MONITORING, Colors.BLUE)
                     self._detail_log(f"Đang kiểm tra trạng thái của @{self.user}...")
-
-                    room_id = loop.run_until_complete(self.client.web.fetch_room_id_from_api(self.user))
-                    if not room_id: raise UserOfflineError("API không trả về Room ID.")
                     
-                    room_info = loop.run_until_complete(self.client.web.fetch_room_info(room_id))
-                    if room_info.get("status", 4) == 4: raise UserOfflineError("User offline.")
+                    room_info = None
 
-                    logger.info(f"Xác nhận user @{self.user} đang live. Bắt đầu ghi hình.")
-                    self._detail_log("Xác nhận user đang live. Bắt đầu ghi hình.")
-                    self.current_wait_time = self.INITIAL_WAIT_TIME
+                    self._detail_log("Phương pháp 1: Thử bằng Scr...")
+                    try:
+                        room_id_scraped = self.scraper.get_room_id_from_user_page(self.user)
+                        if room_id_scraped:
+                            fetched_info = loop.run_until_complete(self.client.web.fetch_room_info(room_id_scraped))
+                            if fetched_info.get("status", 4) != 4:
+                                room_info = fetched_info
+                                self._detail_log("Lấy Thông tin Scr: Thành công!")
+                            else:
+                                self._detail_log("Lấy Thông tin Scr: Thành công, nhưng user không live.")
+                    except Exception as e:
+                        self._detail_log(f"Lấy Thông tin Scr: Thất bại ({e}). Chuyển sang phương án 2.")
+
+                    if not room_info:
+                        self._detail_log("Phương pháp 2: Thử bằng thư viện...")
+                        try:
+                            room_id_api = loop.run_until_complete(self.client.web.fetch_room_id_from_api(self.user))
+                            if room_id_api:
+                                fetched_info = loop.run_until_complete(self.client.web.fetch_room_info(room_id_api))
+                                if fetched_info.get("status", 4) != 4:
+                                    room_info = fetched_info
+                                    self._detail_log("Dùng thư viện: Thành công!")
+                                else:
+                                     self._detail_log("Dùng thư viện: Thành công, nhưng user không live.")
+                        except Exception as e:
+                            self._detail_log(f"Dùng thư viện cũng thất bại: {e}")
                     
-                    self._record_stream(room_info)
+                    if room_info:
+                        logger.info(f"Xác nhận user @{self.user} đang live. Bắt đầu ghi hình.")
+                        self._detail_log("Xác nhận user đang live. Bắt đầu ghi hình.")
+                        self.current_wait_time = self.INITIAL_WAIT_TIME
+                        self._record_stream(room_info)
 
-                    if not self.manual_stop_requested and not self.cancellation_requested:
-                        self._update_status(Status.INFO_LIVESTREAM_ENDED, Colors.GREY)
-                        self._detail_log("Live đã kết thúc. Quay lại chế độ theo dõi.")
+                        if not self.manual_stop_requested and not self.cancellation_requested:
+                            self._update_status(Status.INFO_LIVESTREAM_ENDED, Colors.GREY)
+                            self._detail_log("Live đã kết thúc. Quay lại chế độ theo dõi.")
+                    else:
+                        raise UserOfflineError("User offline (đã kiểm tra bằng cả 2 phương pháp).")
 
                 except UserOfflineError:
                     wait_duration = self.current_wait_time
@@ -382,8 +441,6 @@ class TikTokRecorder(BaseRecorder):
             self._detail_log("Tiến trình ghi hình FFmpeg đã kết thúc.")
             self.process = None
 
-# --- Douyin Section ---
-
 class DouyinHttpClient:
     def __init__(self, cookies=None, custom_headers=None):
         self.session = Session(); self.session.trust_env = False
@@ -453,12 +510,11 @@ class DouyinRecorder(BaseRecorder):
         return final_status
     
     def _handle_douyin_post_recording(self):
-        """Xử lý riêng cho Douyin để chuyển đổi FLV sang MP4 trước."""
         if self.cancellation_requested or (self.manual_stop_requested and not self.output_filepath):
-            return self._handle_post_recording() # Gọi base handler cho các trường hợp này
+            return self._handle_post_recording()
         
         if not self.output_filepath or not os.path.exists(self.output_filepath) or os.path.getsize(self.output_filepath) <= 1024:
-            return self._handle_post_recording() # Để base handler xử lý lỗi file
+            return self._handle_post_recording()
         
         self._detail_log("Chuyển đổi file FLV sang MP4...")
         mp4_file = VideoManagement.convert_flv_to_mp4(self.output_filepath, self.recording_id)
@@ -470,8 +526,8 @@ class DouyinRecorder(BaseRecorder):
             return {'status': 'failed', 'filepath': self.output_filepath}
 
         self._detail_log("Chuyển đổi sang MP4 thành công.")
-        self.output_filepath = mp4_file # Cập nhật filepath để base handler sử dụng
-        return self._handle_post_recording() # Gọi base handler để xử lý MP3/Mute
+        self.output_filepath = mp4_file
+        return self._handle_post_recording()
 
     def _record_stream(self, live_url):
         if not live_url:

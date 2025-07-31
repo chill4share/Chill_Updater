@@ -25,10 +25,12 @@ a = Analysis(
         'requests',
         'psutil',
         'tenacity',
+        'enum',  # BỔ SUNG: Cần thiết cho class TikTokError
 
         # Thư viện cho phương án fallback lấy RoomID
         'TikTokLive',
-        'nest_asyncio'
+        'nest_asyncio',
+        'google.protobuf'  # BỔ SUNG: Cực kỳ quan trọng, là dependency của TikTokLive
     ],
     hookspath=[],
     hooksconfig={},
