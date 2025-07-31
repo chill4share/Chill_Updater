@@ -1,0 +1,8 @@
+psutil
+requests
+tenacity
+mutagen
+Pillow
+pygame
+nest-asyncio
+tiktoklive
