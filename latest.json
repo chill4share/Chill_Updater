@@ -1,12 +1,17 @@
 {
-  "version": "1.1.0",
-  "notes": [],
-  "pub_date": "2025-07-31T08:00:56.131640+00:00",
+  "version": "1.1.1",
+  "notes": [
+    "Fix bug, Error v1.1.0",
+    "Cải thiện giao diện",
+    "Cải thiện sử lý video",
+    "Add more bugs"
+  ],
+  "pub_date": "2025-08-01T06:57:11.164954+00:00",
   "platforms": {
     "windows-x64": {
-      "url": "https://github.com/chill4share/Chill_Updater/releases/download/v1.1.0/MediaTools.exe",
+      "url": "https://github.com/chill4share/Chill_Updater/releases/download/v1.1.1/MediaTools.exe",
       "updater_url": "https://github.com/chill4share/Chill_Updater/releases/download/updater_beta/updater.exe",
-      "sha256": "ef162fef74041aae293d9c4045266891ebf4587cd5ff0e8e7791104141a31291"
+      "sha256": "d30e6c0ce4ec71a325cfb97f07c8ef520a63a28baf9c76ca072f8947122c42c3"
     }
   }
 }
