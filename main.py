@@ -77,10 +77,10 @@ class MainApplication:
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         # Tự động kiểm tra cập nhật khi khởi động
-        self.check_for_updates(silent=True)
+        self.root.after(1000, lambda: self.check_for_updates(silent=True))
 
     def setup_window(self):
-        self.root.title("Media Tools v1.1.0 WTF")
+        self.root.title("Media Tools v1.1.1 What The Heck")
         self.root.geometry("980x750")
         self.root.minsize(980, 750)
         self.root.resizable(False, False)

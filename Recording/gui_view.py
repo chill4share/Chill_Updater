@@ -3,9 +3,10 @@ from tkinter import font as tkfont
 from tkinter import ttk, scrolledtext, filedialog
 import sys
 import os
+import webbrowser
 
 from Utils.ui_utils import ToolTip, center_dialog, create_tab_title
-from Utils.config import README_CONTENT, MP3_PROFILES
+from Utils.config import README_CONTENT, MP3_PROFILES, GITHUB_URL 
 from Utils.logger_setup import LoggerProvider
 logger = LoggerProvider.get_logger('recording')
 
@@ -326,11 +327,36 @@ class GUIView:
         self.active_dialog = about_window
         about_window.title("About TikTok Live Recorder")
         about_window.resizable(False, False)
-        text_area = scrolledtext.ScrolledText(about_window, wrap=tk.WORD, width=70, height=20, font=("Arial", 10))
-        text_area.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+
+        # Frame chính
+        main_frame = ttk.Frame(about_window, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # 1. Phần nội dung chính
+        text_area = scrolledtext.ScrolledText(main_frame, wrap=tk.WORD, width=70, height=18, font=("Arial", 10))
+        text_area.pack(padx=5, pady=5, fill=tk.BOTH, expand=True)
         text_area.insert(tk.END, README_CONTENT)
         text_area.config(state="disabled")
-        tk.Button(about_window, text="Close", command=self.close_active_dialog).pack(pady=5)
+
+        # 2. Phần liên kết có thể nhấp
+        def open_link(event):
+            webbrowser.open_new(GITHUB_URL)
+
+        link_font = tkfont.Font(family="Arial", size=10, underline=True)
+        
+        link_label = ttk.Label(
+            main_frame, 
+            text="Tham khảo mã nguồn mở tại: " + GITHUB_URL, 
+            font=link_font, 
+            foreground="blue", 
+            cursor="hand2"
+        )
+        link_label.pack(pady=(5, 0))
+        link_label.bind("<Button-1>", open_link)
+
+        # 3. Nút đóng
+        ttk.Button(main_frame, text="Close", command=self.close_active_dialog, style="Accent.TButton").pack(pady=15)
+        
         about_window.transient(self.root)
         about_window.grab_set()
         center_dialog(about_window)

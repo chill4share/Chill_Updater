@@ -3,7 +3,6 @@
 import os
 import threading
 from datetime import datetime
-import re
 
 from Utils.logger_setup import LoggerProvider
 from Utils.ffmpeg_utils import run_ffmpeg, stop_ffmpeg_processes
@@ -15,15 +14,13 @@ class VideoToolsController:
         self.thread_pool = thread_pool
         self.logger = LoggerProvider.get_logger('video_tools')
         
-        self.active_ffmpeg_pids = []
         self.is_processing = False
         self.task_lock = threading.Lock()
         self.active_tasks = 0
 
     def on_closing(self):
-        if self.active_ffmpeg_pids:
-            self.logger.warning(f"Đang dừng {len(self.active_ffmpeg_pids)} tiến trình FFmpeg...")
-            stop_ffmpeg_processes(self.active_ffmpeg_pids)
+        # This method is good practice if you need to clean up ffmpeg on exit
+        pass
 
     def task_finished(self, operation_name):
         with self.task_lock:
@@ -44,130 +41,101 @@ class VideoToolsController:
         self.gui.log_status(f"Các file sẽ được lưu tại: {output_session_dir}")
         return output_session_dir
 
-    # --- LOGIC CHO WATERMARK ---
-    def start_watermarking(self, video_path, logo_path, position, padding):
-        if self.is_processing: return
-        self.is_processing = True
-        self.gui.set_ui_state("processing")
-        with self.task_lock: self.active_tasks = 1
-        
-        session_folder = self.create_session_folder("Watermarked")
-        output_file = self.get_output_path(video_path, session_folder, "_watermarked")
-        
-        self.thread_pool.submit(self.run_watermark_task, video_path, logo_path, position, padding, output_file)
-
-    def run_watermark_task(self, video_path, logo_path, position, padding, output_file):
-        try:
-            self.gui.log_status(f"Bắt đầu chèn logo vào {os.path.basename(video_path)}...")
-            pos_map = {
-                "Trên-Trái": f"overlay={padding}:{padding}",
-                "Trên-Phải": f"overlay=W-w-{padding}:{padding}",
-                "Dưới-Trái": f"overlay={padding}:H-h-{padding}",
-                "Dưới-Phải": f"overlay=W-w-{padding}:H-h-{padding}"
-            }
-            filter_complex = f"[0:v][1:v]{pos_map[position]}"
-            args = ["-i", logo_path, "-filter_complex", filter_complex]
-            run_ffmpeg(video_path, output_file, args)
-            self.gui.log_status(f"Chèn logo thành công -> {os.path.basename(output_file)}", "success")
-        except Exception as e:
-            self.logger.error(f"Lỗi khi chèn logo: {e}", exc_info=True)
-            self.gui.log_status(f"LỖI: {e}", "error")
-        finally:
-            self.task_finished("chèn logo")
-
-    # --- LOGIC CHO GẮN PHỤ ĐỀ ---
-    def start_hardsubbing(self, video_path, subtitle_path):
+    # --- LOGIC XỬ LÝ VIDEO TỔNG HỢP ---
+    def start_combined_processing(self, params):
         if self.is_processing: return
         self.is_processing = True
         self.gui.set_ui_state("processing")
         with self.task_lock: self.active_tasks = 1
 
-        session_folder = self.create_session_folder("Hardsubbed")
-        output_file = self.get_output_path(video_path, session_folder, "_subbed")
+        session_folder = self.create_session_folder("Processed_Video")
+        output_file = self.get_output_path(params["video_path"], session_folder, "_processed")
 
-        self.thread_pool.submit(self.run_hardsub_task, video_path, subtitle_path, output_file)
+        self.thread_pool.submit(self.run_combined_task, output_file, params)
 
-    def run_hardsub_task(self, video_path, subtitle_path, output_file):
+    def run_combined_task(self, output_file, params):
         try:
-            self.gui.log_status(f"Bắt đầu gắn phụ đề vào {os.path.basename(video_path)}...")
-            # FFmpeg yêu cầu đường dẫn file phụ đề phải được escape đúng cách
-            escaped_sub_path = subtitle_path.replace('\\', '/').replace(':', '\\:')
-            filter_vf = f"subtitles='{escaped_sub_path}'"
-            args = ["-vf", filter_vf]
-            run_ffmpeg(video_path, output_file, args)
-            self.gui.log_status(f"Gắn phụ đề thành công -> {os.path.basename(output_file)}", "success")
-        except Exception as e:
-            self.logger.error(f"Lỗi khi gắn phụ đề: {e}", exc_info=True)
-            self.gui.log_status(f"LỖI: {e}", "error")
-        finally:
-            self.task_finished("gắn phụ đề")
+            input_files = []
+            video_filters = []
+            map_args = []
+            log_messages = []
 
-    # --- LOGIC CHO TẠO GIF ---
-    def start_gif_creation(self, video_path, start_time, duration, fps, width):
-        if self.is_processing: return
-        self.is_processing = True
-        self.gui.set_ui_state("processing")
-        with self.task_lock: self.active_tasks = 1
+            # --- Xây dựng danh sách Input và Map cơ bản ---
+            # Input 0: Video chính
+            input_files.extend(["-i", params["video_path"]])
+            video_stream_label = "[0:v]"
+            audio_stream_label = "[0:a]"
 
-        session_folder = self.create_session_folder("GIF_Creation")
-        output_file = self.get_output_path(video_path, session_folder, "", new_ext=".gif")
-        
-        self.thread_pool.submit(self.run_gif_creation_task, video_path, start_time, duration, fps, width, session_folder, output_file)
+            # --- Xử lý Transform (Xoay/Lật & Thu phóng) ---
+            transform_filters = []
+            if params.get("rotate_enabled"):
+                option = params["rotate_option"]
+                log_messages.append(f"xoay/lật ({option})")
+                filter_map = {
+                    "Xoay 90° theo chiều kim đồng hồ": "transpose=1",
+                    "Xoay 90° ngược chiều kim đồng hồ": "transpose=2",
+                    "Lật video theo chiều ngang": "hflip",
+                    "Lật video theo chiều dọc": "vflip"
+                }
+                transform_filters.append(filter_map[option])
 
-    def run_gif_creation_task(self, video_path, start_time, duration, fps, width, session_folder, output_file):
-        try:
-            self.gui.log_status("Bắt đầu tạo ảnh GIF (2 bước)...")
-            palette_file = os.path.join(session_folder, "palette.png")
+            if params.get("scale_enabled"):
+                factor = params["scale_factor"]
+                log_messages.append(f"thu phóng ({factor}x)")
+                transform_filters.append(f"crop=iw/{factor}:ih/{factor}")
             
-            # Bước 1: Tạo bảng màu (palette) để GIF đẹp hơn
-            self.gui.log_status("Bước 1/2: Đang tạo bảng màu tối ưu...")
-            palette_filter = f"fps={fps},scale={width}:-1:flags=lanczos,palettegen"
-            palette_args = ["-ss", start_time, "-t", duration, "-vf", palette_filter]
-            run_ffmpeg(video_path, palette_file, palette_args)
-            
-            # Bước 2: Sử dụng bảng màu để tạo GIF
-            self.gui.log_status("Bước 2/2: Đang tạo file GIF...")
-            gif_filter = f"fps={fps},scale={width}:-1:flags=lanczos[x];[x][1:v]paletteuse"
-            gif_args = ["-ss", start_time, "-t", duration, "-i", palette_file, "-filter_complex", gif_filter]
-            run_ffmpeg(video_path, output_file, gif_args)
+            if transform_filters:
+                # Nối các filter transform và gán nhãn tạm thời
+                video_filters.append(f"{video_stream_label}{','.join(transform_filters)}[v_transformed]")
+                video_stream_label = "[v_transformed]" # Cập nhật nhãn cho bước tiếp theo
 
-            os.remove(palette_file) # Dọn dẹp file palette
-            self.gui.log_status(f"Tạo GIF thành công -> {os.path.basename(output_file)}", "success")
+            # --- Xử lý Watermark (Chèn Logo) ---
+            if params.get("watermark_enabled"):
+                logo_path = params["logo_path"]
+                pos = params["watermark_pos"]
+                pad = params["watermark_pad"]
+                log_messages.append("chèn logo")
+
+                # Input 1: Logo
+                input_files.extend(["-i", logo_path])
+                pos_map = {
+                    "Trên-Trái": f"overlay={pad}:{pad}", "Trên-Phải": f"overlay=W-w-{pad}:{pad}",
+                    "Dưới-Trái": f"overlay={pad}:H-h-{pad}", "Dưới-Phải": f"overlay=W-w-{pad}:H-h-{pad}"
+                }
+                # Nối filter watermark và gán nhãn tạm thời
+                video_filters.append(f"{video_stream_label}[1:v]{pos_map[pos]}[v_watermarked]")
+                video_stream_label = "[v_watermarked]" # Cập nhật nhãn
+
+            # --- Xử lý Audio (Ghép âm thanh mới) ---
+            if params.get("audio_enabled"):
+                audio_path = params["audio_path"]
+                log_messages.append("ghép âm thanh mới")
+                
+                # Input tiếp theo: Audio
+                input_files.extend(["-i", audio_path])
+                audio_input_index = len(input_files) // 2 - 1 # Tìm chỉ số của input audio
+                audio_stream_label = f"[{audio_input_index}:a]"
+
+            # --- Finalize và chạy FFmpeg ---
+            final_args = list(input_files)
+            if video_filters:
+                final_args.extend(["-filter_complex", ";".join(video_filters)])
+            
+            # Map video và audio cuối cùng
+            map_args.extend(["-map", video_stream_label, "-map", audio_stream_label])
+            final_args.extend(map_args)
+            
+            # Thêm codec và flag -shortest để đảm bảo video kết thúc cùng âm thanh
+            final_args.extend(["-c:v", "libx264", "-c:a", "aac", "-shortest"])
+
+            log_string = " và ".join(log_messages) if log_messages else "xử lý"
+            self.gui.log_status(f"Bắt đầu {log_string}...")
+            
+            run_ffmpeg(None, output_file, final_args, use_input_path_as_first_arg=False)
+            
+            self.gui.log_status(f"Xử lý video thành công -> {os.path.basename(output_file)}", "success")
         except Exception as e:
-            self.logger.error(f"Lỗi khi tạo GIF: {e}", exc_info=True)
+            self.logger.error(f"Lỗi khi xử lý video: {e}", exc_info=True)
             self.gui.log_status(f"LỖI: {e}", "error")
         finally:
-            self.task_finished("tạo GIF")
-
-    # --- LOGIC CHO THAY ĐỔI KÍCH THƯỚC ---
-    def start_resizing(self, video_path, method, target_ratio_str):
-        if self.is_processing: return
-        self.is_processing = True
-        self.gui.set_ui_state("processing")
-        with self.task_lock: self.active_tasks = 1
-
-        session_folder = self.create_session_folder("Resized")
-        output_file = self.get_output_path(video_path, session_folder, f"_resized_{target_ratio_str.replace(':', 'x')}")
-
-        self.thread_pool.submit(self.run_resize_task, video_path, method, target_ratio_str, output_file)
-
-    def run_resize_task(self, video_path, method, target_ratio_str, output_file):
-        try:
-            self.gui.log_status(f"Bắt đầu thay đổi kích thước sang {target_ratio_str}...")
-            w, h = map(int, target_ratio_str.split(':'))
-            
-            if method == "Cắt để vừa (Crop)":
-                # Cắt phần thừa hai bên hoặc trên dưới
-                filter_vf = f"scale=iw*max({w}/iw\\,{h}/ih):ih*max({w}/iw\\,{h}/ih),crop={w}*iw/{w}:{h}*ih/{h}"
-            else: # Thêm viền đen (Pad)
-                # Thu nhỏ video để vừa khung hình, sau đó thêm viền đen
-                filter_vf = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2"
-
-            args = ["-vf", filter_vf, "-c:a", "copy"]
-            run_ffmpeg(video_path, output_file, args)
-            self.gui.log_status(f"Thay đổi kích thước thành công -> {os.path.basename(output_file)}", "success")
-        except Exception as e:
-            self.logger.error(f"Lỗi khi thay đổi kích thước: {e}", exc_info=True)
-            self.gui.log_status(f"LỖI: {e}", "error")
-        finally:
-            self.task_finished("thay đổi kích thước")
+            self.task_finished("xử lý video")

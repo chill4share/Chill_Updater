@@ -34,8 +34,10 @@ TIKTOK_CONFIG = {
 }
 
 README_CONTENT = """
-
+AaBbCc
 """
+
+GITHUB_URL = "https://github.com/chill4share/Chill_Updater"
 
 # === Cấu hình mới cho việc chuyển đổi MP3 ===
 MP3_PROFILES = {
